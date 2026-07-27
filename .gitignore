@@ -1,0 +1,15 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.exe
+*.hex
+*.bin
+.vscode/
+.idea/
+*.zip
+*.rar
+tools/riscv-gcc/
+pc_app/electron/node_modules/
+.DS_Store
+Thumbs.db
