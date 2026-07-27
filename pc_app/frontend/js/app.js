@@ -19,6 +19,7 @@
         stats: { mouse_events: 0, packets_sent: 0, bytes_sent: 0, uptime: 0 },
         trajectory: { enabled: false },
         lockMode: false,
+        triggerEnabled: false,
     };
 
     /**
@@ -117,6 +118,32 @@
             });
         }
 
+        // FOV 自瞄范围
+        const sliderFov = document.getElementById('slider-fov');
+        const lblFov = document.getElementById('lbl-fov');
+        if (sliderFov) {
+            sliderFov.addEventListener('input', () => {
+                if (lblFov) lblFov.textContent = sliderFov.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 目标类别优先级
+        const targetPriority = document.getElementById('target-priority-select');
+        if (targetPriority) {
+            targetPriority.addEventListener('change', sendTrajectoryConfig);
+        }
+
+        // 预测帧数
+        const sliderPrediction = document.getElementById('slider-prediction');
+        const lblPrediction = document.getElementById('lbl-prediction');
+        if (sliderPrediction) {
+            sliderPrediction.addEventListener('input', () => {
+                if (lblPrediction) lblPrediction.textContent = sliderPrediction.value;
+                sendTrajectoryConfig();
+            });
+        }
+
         // 偏移量
         const offsetX = document.getElementById('offset-x');
         const offsetY = document.getElementById('offset-y');
@@ -132,15 +159,39 @@
                 sendTrajectoryConfig();
             });
         }
+
+        // 自动扳机开关
+        const btnTrigger = document.getElementById('btn-trigger');
+        if (btnTrigger) {
+            btnTrigger.addEventListener('click', () => {
+                state.triggerEnabled = !state.triggerEnabled;
+                updateTriggerUI(state.triggerEnabled);
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 触发阈值
+        const sliderTriggerThreshold = document.getElementById('slider-trigger-threshold');
+        const lblTriggerThreshold = document.getElementById('lbl-trigger-threshold');
+        if (sliderTriggerThreshold) {
+            sliderTriggerThreshold.addEventListener('input', () => {
+                if (lblTriggerThreshold) lblTriggerThreshold.textContent = sliderTriggerThreshold.value;
+                sendTrajectoryConfig();
+            });
+        }
     }
 
     function sendTrajectoryConfig() {
         const smooth = parseFloat(document.getElementById('slider-smooth')?.value) || 0.35;
         const maxStep = parseInt(document.getElementById('slider-maxstep')?.value) || 10;
-        const confidence = parseFloat(document.getElementById('slider-confidence')?.value) || 0.45;
+        const confidence = parseFloat(document.getElementById('slider-confidence')?.value) || 0.30;
         const offsetX = parseInt(document.getElementById('offset-x')?.value) || 0;
         const offsetY = parseInt(document.getElementById('offset-y')?.value) || 0;
         const jitter = parseFloat(document.getElementById('slider-jitter')?.value) || 0.15;
+        const fov = parseInt(document.getElementById('slider-fov')?.value) || 300;
+        const priority = parseInt(document.getElementById('target-priority-select')?.value) || -1;
+        const prediction = parseInt(document.getElementById('slider-prediction')?.value) || 3;
+        const triggerThreshold = parseInt(document.getElementById('slider-trigger-threshold')?.value) || 5;
 
         ws.send({
             type: 'trajectory_config',
@@ -150,7 +201,31 @@
             target_offset_x: offsetX,
             target_offset_y: offsetY,
             jitter_amount: jitter,
+            target_priority: priority,
+            prediction_ticks: prediction,
+            fov_radius: fov,
+            trigger_enabled: state.triggerEnabled,
+            trigger_threshold: triggerThreshold,
         });
+    }
+
+    /**
+     * 更新扳机按钮 UI
+     */
+    function updateTriggerUI(enabled) {
+        const btn = document.getElementById('btn-trigger');
+        const dot = document.getElementById('dot-trigger-status');
+        const text = document.getElementById('trigger-status-text');
+        if (btn) {
+            btn.textContent = enabled ? '扳机: 开' : '扳机: 关';
+            btn.className = enabled ? 'btn danger' : 'btn';
+        }
+        if (dot) {
+            dot.className = enabled ? 'dot warn' : 'dot';
+        }
+        if (text) {
+            text.textContent = enabled ? '已启用 - 等待目标' : '未触发';
+        }
     }
 
     // ================================================================
@@ -217,6 +292,7 @@
             settings.addLog('已连接到后端服务', 'ok');
             ws.send({ type: 'list_ports' });
             ws.send({ type: 'get_state' });
+            ws.send({ type: 'list_models' });  // 自动刷新模型列表
         });
 
         ws.on('disconnected', () => {
@@ -234,7 +310,7 @@
         ws.on('port_list', (data) => {
             if (data.ports) {
                 settings.updatePortList(data.ports);
-                if (data.ports.some(p => p.vid === 0x4348) && !state.serialConnected) {
+                if (data.ports.some(p => p.vid === 0x1A86 || p.vid === 0x4348) && !state.serialConnected) {
                     settings.addLog('检测到 CH32V305, 点击"连接"开始转发', 'ok');
                 }
             }
@@ -289,6 +365,38 @@
             }
         });
 
+        // 模型列表
+        ws.on('model_list', (data) => {
+            const select = document.getElementById('model-select');
+            if (!select) return;
+            select.innerHTML = '<option value="">-- 选择模型 --</option>';
+            if (data.models && data.models.length > 0) {
+                for (const m of data.models) {
+                    const opt = document.createElement('option');
+                    opt.value = m.path;
+                    const sizeMB = (m.size / 1024 / 1024).toFixed(1);
+                    opt.textContent = `${m.name} (${sizeMB}MB)`;
+                    if (m.path === data.current) opt.selected = true;
+                    select.appendChild(opt);
+                }
+                settings.addLog(`找到 ${data.models.length} 个模型文件`, 'ok');
+            }
+        });
+
+        // 模型加载回调
+        ws.on('model_status', (data) => {
+            const statusEl = document.getElementById('det-model-status');
+            if (statusEl) {
+                if (data.loaded) {
+                    statusEl.innerHTML = `<span class="dot ok"></span> ${data.name || '已加载'}`;
+                    settings.addLog(`模型已加载: ${data.name || data.path}`, 'ok');
+                } else {
+                    statusEl.innerHTML = `<span class="dot"></span> 加载失败: ${data.error || '未知错误'}`;
+                    settings.addLog(`模型加载失败: ${data.error}`, 'err');
+                }
+            }
+        });
+
         ws.on('detection_status', (data) => {
             capturePanel.onDetectionStatus(data);
             const statusEl = document.getElementById('det-model-status');
@@ -338,11 +446,27 @@
             capturePanel.onVideoStatus(data);
         });
 
+        // 扳机触发事件
+        ws.on('trigger_event', (data) => {
+            const dot = document.getElementById('dot-trigger-status');
+            const text = document.getElementById('trigger-status-text');
+            if (dot) {
+                dot.className = data.pressed ? 'dot ok' : 'dot warn';
+            }
+            if (text) {
+                if (data.pressed) {
+                    text.textContent = `🔥 已开火 (距离: ${data.target_distance.toFixed(1)}px)`;
+                } else {
+                    text.textContent = '等待目标';
+                }
+            }
+        });
+
         // 锁定模式
         ws.on('lock_mode_status', (data) => {
             state.lockMode = data.enabled;
             updateLockUI(data.enabled);
-            settings.addLog(data.enabled ? '🔒 锁定模式已开启 - 鼠标不控制本机' : '锁定模式已关闭', data.enabled ? 'warn' : 'info');
+            settings.addLog(data.enabled ? '🔒 锁定模式 - 全屏黑幕已激活, 按ESC退出' : '锁定模式已关闭', data.enabled ? 'warn' : 'info');
         });
 
         // 绑定锁定模式按钮
@@ -357,6 +481,25 @@
             });
         }
 
+        // 模型选择器
+        const modelSelect = document.getElementById('model-select');
+        const btnRefreshModels = document.getElementById('btn-refresh-models');
+        if (btnRefreshModels) {
+            btnRefreshModels.addEventListener('click', () => {
+                ws.send({ type: 'list_models' });
+            });
+        }
+        if (modelSelect) {
+            modelSelect.addEventListener('change', () => {
+                const path = modelSelect.value;
+                if (path) {
+                    settings.addLog(`正在加载模型: ${path.split('\\').pop() || path.split('/').pop()}`, 'info');
+                    ws.send({ type: 'load_model', path });
+                }
+            });
+        }
+
+        // 启动后自动刷新模型列表
         ws.connect();
         settings.addLog('Mouse Forwarder 启动中...', 'info');
         settings.addLog(`连接至 ${url}`, 'info');

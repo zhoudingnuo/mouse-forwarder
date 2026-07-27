@@ -19,9 +19,12 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import glob
 import signal
 import sys
 import time
+import threading
 from typing import Any, Optional, List, Tuple
 
 import numpy as np
@@ -69,7 +72,7 @@ class MouseForwarderBackend:
         self.serial_baud = serial_baud
         self.model_path = model_path
         
-        # 组件
+        # 组件 - pynput 鼠标捕获 (经过系统处理, 手感自然)
         self.mouse = MouseMonitor(on_event=self._on_mouse_event)
         self.serial = SerialForwarder(baudrate=serial_baud)
         self.serial.set_connection_callback(self._on_serial_connection)
@@ -99,17 +102,31 @@ class MouseForwarderBackend:
         self._mouse_active = False
         self._capture_active = False
         self._detection_active = False
+        
         self._trajectory_enabled = False
         self._show_video = True  # 默认显示画面
         self._lock_mode = False  # 锁定模式: 鼠标不控制本机
+        self._old_mouse_speed = None  # 保存原始鼠标速度
         self._keyboard_listener = None  # Escape 键监听器
+        self._trigger_enabled = False  # 自动扳机
+        self._trigger_threshold = 5  # 自动扳机触发阈值 (像素)
+        self._trigger_armed = False  # 扳机状态 (避免重复触发)
+        self._trigger_last_fire = 0  # 上次触发时间
         
         # 检测管道任务
         self._pipeline_task: Optional[asyncio.Task] = None
         
-        # 屏幕中心 (默认 1920x1080)
+        # 屏幕中心 (自动检测, 默认 1920x1080)
         self._screen_w = 1920
         self._screen_h = 1080
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            self._screen_w = user32.GetSystemMetrics(0)
+            self._screen_h = user32.GetSystemMetrics(1)
+            logger.info(f"Detected screen: {self._screen_w}x{self._screen_h}")
+        except Exception:
+            logger.info(f"Using default screen: {self._screen_w}x{self._screen_h}")
     
     async def start(self):
         """启动后端服务"""
@@ -226,7 +243,15 @@ class MouseForwarderBackend:
 
             await asyncio.sleep(1)  # 额外等前端就绪
             logger.info("Auto-starting capture card...")
-            await self._start_capture(0)  # camera_index=0 会自动查找 MS2130
+            # 自动检测 MS2130 采集卡索引
+            try:
+                from capture_card import CaptureCard
+                ms2130_idx = await asyncio.to_thread(CaptureCard.find_ms2130)
+                logger.info(f"Auto-detected capture card at index {ms2130_idx}")
+            except Exception as e:
+                logger.warning(f"Auto-detect failed: {e}, using index 0")
+                ms2130_idx = 0
+            await self._start_capture(ms2130_idx)
         except Exception as e:
             logger.error(f"Auto-start capture failed: {e}")
 
@@ -298,15 +323,83 @@ class MouseForwarderBackend:
     # ================================================================
 
     async def _lock_mode_on(self):
-        """进入锁定模式: 鼠标不控制本机, 按 Escape 退出"""
+        """进入锁定模式: 弹出全屏黑幕, 鼠标不控制本机, 按 Escape 退出"""
         if self._lock_mode:
             return
 
         self._lock_mode = True
-        logger.info("Lock mode ON - mouse will not control local machine")
+        logger.info("Lock mode ON - showing black overlay")
 
-        # 切换鼠标监听器为 suppress 模式 (阻止事件传播到本机)
-        self.mouse.set_suppress(True)
+        # 保存当前鼠标速度, 设为最低 (让本机鼠标几乎不动)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            SPI_GETMOUSESPEED = 0x0070
+            SPI_SETMOUSESPEED = 0x0071
+            speed = wintypes.UINT()
+            ctypes.windll.user32.SystemParametersInfoW(SPI_GETMOUSESPEED, 0, ctypes.byref(speed), 0)
+            self._old_mouse_speed = speed.value
+            ctypes.windll.user32.SystemParametersInfoW(SPI_SETMOUSESPEED, 0, ctypes.c_void_p(1), 0)
+            logger.info(f"Mouse speed: {self._old_mouse_speed} -> 1")
+        except Exception as e:
+            logger.warning(f"Failed to set mouse speed: {e}")
+            self._old_mouse_speed = None
+
+        # 把鼠标光标移到屏幕中心
+        try:
+            import win32api
+            screen_w = win32api.GetSystemMetrics(0)
+            screen_h = win32api.GetSystemMetrics(1)
+            win32api.SetCursorPos(screen_w // 2, screen_h // 2)
+            logger.info(f"Cursor moved to center ({screen_w//2}, {screen_h//2})")
+        except Exception as e:
+            logger.warning(f"Failed to move cursor: {e}")
+
+        # 弹出全屏黑幕 (后台线程)
+        # 注意: 不设置 suppress, 光标可以自由移动
+
+        # 弹出全屏黑幕 (后台线程)
+        self._overlay_thread = None
+        self._overlay_root = None
+        self._overlay_stop = threading.Event()
+
+        def overlay_thread():
+            try:
+                import tkinter as tk
+                root = tk.Tk()
+                self._overlay_root = root
+                root.overrideredirect(True)  # 无边框
+                root.attributes('-topmost', True)  # 置顶
+                root.configure(bg='black')
+                # 手动设置全屏尺寸 (比 attributes('-fullscreen') 更兼容)
+                screen_w = root.winfo_screenwidth()
+                screen_h = root.winfo_screenheight()
+                root.geometry(f'{screen_w}x{screen_h}+0+0')
+                root.focus_force()
+                root.grab_set()  # 捕获所有输入
+
+                # 阻止 Alt+F4 关闭
+                root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+                # 轮询检查是否需要关闭
+                def check_stop():
+                    if self._overlay_stop.is_set():
+                        try:
+                            root.destroy()
+                        except Exception:
+                            pass
+                        return
+                    root.after(100, check_stop)
+                root.after(100, check_stop)
+
+                root.mainloop()
+            except ImportError:
+                logger.warning("tkinter not available, using suppress mode only")
+            except Exception as e:
+                logger.error(f"Overlay error: {e}")
+
+        self._overlay_thread = threading.Thread(target=overlay_thread, daemon=True)
+        self._overlay_thread.start()
 
         # 启动键盘监听 (检测 Escape 键退出)
         if HAS_KEYBOARD and self._loop:
@@ -314,7 +407,6 @@ class MouseForwarderBackend:
                 try:
                     if key == keyboard.Key.esc:
                         logger.info("Escape pressed, exiting lock mode")
-                        # 从线程安全地调用协程
                         asyncio.run_coroutine_threadsafe(
                             self._lock_mode_off(),
                             self._loop
@@ -339,6 +431,31 @@ class MouseForwarderBackend:
 
         self._lock_mode = False
         logger.info("Lock mode OFF")
+
+        # 恢复鼠标速度
+        if self._old_mouse_speed is not None:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                SPI_SETMOUSESPEED = 0x0071
+                ctypes.windll.user32.SystemParametersInfoW(
+                    SPI_SETMOUSESPEED, 0, ctypes.c_void_p(self._old_mouse_speed), 0
+                )
+                logger.info(f"Mouse speed restored to {self._old_mouse_speed}")
+            except Exception as e:
+                logger.warning(f"Failed to restore mouse speed: {e}")
+            self._old_mouse_speed = None
+
+        # 关闭全屏黑幕
+        if self._overlay_stop:
+            self._overlay_stop.set()
+        if self._overlay_root:
+            try:
+                self._overlay_root.quit()
+            except Exception:
+                pass
+        self._overlay_root = None
+        self._overlay_thread = None
 
         # 恢复鼠标监听器正常模式
         self.mouse.set_suppress(False)
@@ -388,7 +505,10 @@ class MouseForwarderBackend:
                 
                 # 计算轨迹
                 ai_steps = self.trajectory.calculate(detections)
-                
+
+                # 自动扳机检测: 如果目标在屏幕中心阈值范围内, 自动按下鼠标左键
+                await self._check_auto_trigger(detections)
+
                 # 发送 AI 轨迹到串口
                 if ai_steps and self.serial.is_connected:
                     for dx, dy in ai_steps:
@@ -420,7 +540,84 @@ class MouseForwarderBackend:
                 await asyncio.sleep(0.1)
         
         logger.info("Detection pipeline loop ended")
-    
+
+    # ================================================================
+    # 自动扳机: 检测到目标在屏幕中心附近时自动按下左键
+    # ================================================================
+
+    async def _check_auto_trigger(self, detections: List[Detection]):
+        """
+        自动扳机检测
+
+        当目标离屏幕中心的距离小于阈值时, 自动发送鼠标左键按下/释放事件。
+        使用 armed 状态防止重复触发。
+        """
+        if not self._trigger_enabled:
+            # 如果扳机关闭但之前按下了, 释放
+            if self._trigger_armed:
+                await self._fire_trigger(False)
+                self._trigger_armed = False
+            return
+
+        # 查找离屏幕中心最近的目标
+        target_dist = float('inf')
+        for d in detections:
+            if d.confidence < self.trajectory.config.min_confidence:
+                continue
+            # FOV 范围检查
+            if self.trajectory.config.fov_radius > 0:
+                fov_sq = self.trajectory.config.fov_radius ** 2
+                dist_sq = (d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2
+                if dist_sq > fov_sq:
+                    continue
+                dist = dist_sq ** 0.5
+            else:
+                dist = ((d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2) ** 0.5
+            if dist < target_dist:
+                target_dist = dist
+
+        # 检查是否在阈值范围内
+        in_range = target_dist <= self._trigger_threshold
+
+        if in_range and not self._trigger_armed:
+            # 进入阈值范围 - 按下左键
+            await self._fire_trigger(True, target_dist)
+            self._trigger_armed = True
+        elif not in_range and self._trigger_armed:
+            # 离开阈值范围 - 释放左键
+            await self._fire_trigger(False, target_dist)
+            self._trigger_armed = False
+
+    async def _fire_trigger(self, pressed: bool, target_dist: float = -1):
+        """
+        发送扳机事件 (鼠标左键按下/释放)
+
+        通过串口发送给目标 PC, 同时通过本机 pynput 模拟 (如果未锁定模式)
+        """
+        # 计算按钮状态
+        if pressed:
+            self._buttons_state_for_trigger = 1  # bit0 = 左键
+        else:
+            self._buttons_state_for_trigger = 0
+
+        # 通过串口发送到目标 PC
+        if self.serial.is_connected:
+            packet = encode_packet(
+                buttons=self._buttons_state_for_trigger,
+                dx=0, dy=0, wheel=0
+            )
+            await self.serial.send(packet)
+            self.stats['packets_sent'] += 1
+            self.stats['bytes_sent'] += len(packet)
+
+        # 通知前端扳机触发
+        if self._ws_client:
+            await self._send({
+                'type': 'trigger_event',
+                'pressed': pressed,
+                'target_distance': target_dist,
+            })
+
     # ================================================================
     # WebSocket 客户端处理
     # ================================================================
@@ -484,13 +681,13 @@ class MouseForwarderBackend:
             # --- 串口管理 ---
             if msg_type == 'connect_serial':
                 port = data.get('port')
-                await self.serial.connect(port)
+                success = await self.serial.connect(port)
                 await self._send({
                     'type': 'serial_status',
                     'connected': self.serial.is_connected,
                     'port': port,
                 })
-            
+
             elif msg_type == 'disconnect_serial':
                 await self.serial.disconnect()
                 await self._send({
@@ -550,7 +747,93 @@ class MouseForwarderBackend:
                     'type': 'camera_list',
                     'cameras': cam_list,
                 })
-            
+
+            # --- 模型管理 ---
+            elif msg_type == 'list_models':
+                try:
+                    # 在项目根目录和 pc_app 目录下查找 .onnx 文件
+                    search_dirs = [
+                        os.path.join(os.path.dirname(__file__), '..'),
+                        os.path.join(os.path.dirname(__file__), '..', '..'),
+                    ]
+                    models = []
+                    for d in search_dirs:
+                        abs_d = os.path.abspath(d)
+                        for f in glob.glob(os.path.join(abs_d, '*.onnx')):
+                            models.append({
+                                'path': f,
+                                'name': os.path.basename(f),
+                                'size': os.path.getsize(f),
+                            })
+                    # 去重 (按文件名)
+                    seen = set()
+                    unique_models = []
+                    for m in models:
+                        if m['name'] not in seen:
+                            seen.add(m['name'])
+                            unique_models.append(m)
+                    await self._send({
+                        'type': 'model_list',
+                        'models': unique_models,
+                        'current': self.model_path or '',
+                    })
+                except Exception as e:
+                    logger.error(f"List models error: {e}")
+                    await self._send({
+                        'type': 'model_list',
+                        'models': [],
+                        'current': '',
+                    })
+
+            elif msg_type == 'load_model':
+                model_path = data.get('path', '')
+                if not model_path or not os.path.exists(model_path):
+                    await self._send({
+                        'type': 'model_status',
+                        'loaded': False,
+                        'error': f'Model not found: {model_path}',
+                    })
+                    return
+                try:
+                    # 如果正在采集, 先停止检测管道
+                    if self._pipeline_task:
+                        self._pipeline_task.cancel()
+                        try:
+                            await self._pipeline_task
+                        except asyncio.CancelledError:
+                            pass
+                        self._pipeline_task = None
+
+                    # 加载新模型
+                    logger.info(f"Loading model: {model_path}")
+                    if self.detector:
+                        await asyncio.to_thread(self.detector.load_model, model_path)
+                    else:
+                        from object_detector import ObjectDetector
+                        self.detector = ObjectDetector()
+                        await asyncio.to_thread(self.detector.load_model, model_path)
+
+                    self.model_path = model_path
+                    logger.info(f"Model loaded: {model_path}")
+
+                    # 如果采集卡正在运行, 重新启动检测管道
+                    if self._capture_active:
+                        self._pipeline_task = asyncio.create_task(self._detection_loop())
+
+                    await self._send({
+                        'type': 'model_status',
+                        'loaded': True,
+                        'path': model_path,
+                        'name': os.path.basename(model_path),
+                    })
+                except Exception as e:
+                    logger.error(f"Load model error: {e}")
+                    await self._send({
+                        'type': 'model_status',
+                        'loaded': False,
+                        'error': str(e),
+                    })
+
             # --- 轨迹控制 ---
             elif msg_type == 'trajectory_enable':
                 self._trajectory_enabled = True
@@ -584,6 +867,16 @@ class MouseForwarderBackend:
                     config.target_offset_y = int(data['target_offset_y'])
                 if 'jitter_amount' in data:
                     config.jitter_amount = float(data['jitter_amount'])
+                if 'target_priority' in data:
+                    config.target_priority = int(data['target_priority'])
+                if 'prediction_ticks' in data:
+                    config.prediction_ticks = int(data['prediction_ticks'])
+                if 'fov_radius' in data:
+                    config.fov_radius = int(data['fov_radius'])
+                if 'trigger_enabled' in data:
+                    self._trigger_enabled = bool(data['trigger_enabled'])
+                if 'trigger_threshold' in data:
+                    self._trigger_threshold = int(data['trigger_threshold'])
                 self.trajectory.set_config(config)
                 await self._send({
                     'type': 'trajectory_config_ack',
@@ -594,6 +887,11 @@ class MouseForwarderBackend:
                         'target_offset_x': config.target_offset_x,
                         'target_offset_y': config.target_offset_y,
                         'jitter_amount': config.jitter_amount,
+                        'target_priority': config.target_priority,
+                        'prediction_ticks': config.prediction_ticks,
+                        'fov_radius': config.fov_radius,
+                        'trigger_enabled': self._trigger_enabled,
+                        'trigger_threshold': self._trigger_threshold,
                     }
                 })
             
@@ -649,64 +947,40 @@ class MouseForwarderBackend:
     # ================================================================
     
     def _on_mouse_event(self, event: MouseEvent):
-        """鼠标事件回调 (从 pynput 线程调用)"""
+        """鼠标事件回调 (从 pynput 线程直接发送串口)"""
         self.stats['mouse_events'] += 1
-        
-        # 更新轨迹计算器的鼠标位置
-        # 近似: 从屏幕中心 + 累积位移
-        # 注: 更精确的鼠标位置需要额外跟踪
-        self.trajectory.update_mouse_position(
-            self._screen_w / 2 + event.dx,
-            self._screen_h / 2 + event.dy,
-        )
-        
-        # 添加真实鼠标轨迹点
-        self.trajectory.add_real_mouse_point(event.dx, event.dy)
-        
-        # 编码并发送到串口
+
+        # 编码并直接发送到串口 (不走 asyncio, 减少延迟)
         packet = encode_packet(event.buttons, event.dx, event.dy, event.wheel)
-        
-        # 使用 asyncio.run_coroutine_threadsafe 从线程安全地调用
-        asyncio.run_coroutine_threadsafe(
-            self._forward_mouse_event(event, packet),
-            self._loop
-        )
-    
-    async def _forward_mouse_event(self, event: MouseEvent, packet: bytes):
-        """转发鼠标事件到串口和前端"""
-        # 发送到串口
         if self.serial.is_connected:
-            success = await self.serial.send(packet)
-            if success:
+            try:
+                self.serial._serial.write(packet)
                 self.stats['packets_sent'] += 1
                 self.stats['bytes_sent'] += len(packet)
-        
-        # 发送到前端
+            except Exception:
+                pass
+
+        # 异步通知前端 (不阻塞串口发送)
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(
+                self._notify_mouse_event(event),
+                self._loop
+            )
+
+    async def _notify_mouse_event(self, event: MouseEvent):
+        """异步通知前端鼠标事件"""
         if self._ws_client:
             try:
-                # 获取轨迹点 (限频发送, 避免数据过大)
-                trail_points = self.trajectory.get_trail_points()
-                recent_trail = trail_points[-50:] if len(trail_points) > 50 else trail_points
-                
                 await self._send({
                     'type': 'mouse_event',
                     'buttons': event.buttons,
                     'left': event.left,
                     'right': event.right,
                     'middle': event.middle,
-                    'back': getattr(event, 'back', False),
-                    'forward': getattr(event, 'forward', False),
                     'dx': event.dx,
                     'dy': event.dy,
                     'wheel': event.wheel,
                     'serial_connected': self.serial.is_connected,
-                    'trajectory': {
-                        'enabled': self._trajectory_enabled,
-                        'trail_points': [
-                            {'x': p.x, 'y': p.y, 'is_ai': p.is_ai}
-                            for p in recent_trail
-                        ],
-                    },
                 })
             except Exception:
                 pass
@@ -753,7 +1027,7 @@ class MouseForwarderBackend:
             if frame is not None and self._show_video:
                 # 在后台线程中执行绘图和编码
                 inference_ms = self.detector.avg_inference_time_ms if self.detector else 0
-                
+
                 # 先缩小到 720p 再编码, 减少传输延迟
                 import cv2
                 h, w = frame.shape[:2]
@@ -761,11 +1035,21 @@ class MouseForwarderBackend:
                     scale = 1280 / w
                     new_w, new_h = int(w * scale), int(h * scale)
                     small_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                    # 检测框坐标也要按比例缩放
+                    scaled_detections = []
+                    for d in detections:
+                        scaled_detections.append(Detection(
+                            x=d.x * scale, y=d.y * scale,
+                            w=d.w * scale, h=d.h * scale,
+                            confidence=d.confidence, class_id=d.class_id,
+                            cx=d.cx * scale, cy=d.cy * scale,
+                        ))
                 else:
                     small_frame = frame
-                
+                    scaled_detections = detections
+
                 annotated = await asyncio.to_thread(
-                    draw_detections_on_frame, small_frame.copy(), detections, inference_ms
+                    draw_detections_on_frame, small_frame.copy(), scaled_detections, inference_ms
                 )
                 # 降低 JPEG 质量到 50 以加快编码速度
                 jpeg_bytes = await asyncio.to_thread(encode_frame_jpeg, annotated, 50)

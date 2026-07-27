@@ -16,6 +16,17 @@ class CustomSelect {
         // 隐藏原生 select
         this.select.classList.add('custom-select-hidden');
 
+        // 监听原生 select 的变化 (当外部 JS 修改 options 时自动同步)
+        this._observer = new MutationObserver(() => {
+            this._buildOptions();
+            this._updateValue();
+        });
+        this._observer.observe(this.select, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
+
         // 构建自定义容器
         this.wrapper = document.createElement('div');
         this.wrapper.className = 'custom-select';
@@ -160,6 +171,10 @@ class CustomSelect {
 
     /** 销毁 */
     destroy() {
+        if (this._observer) {
+            this._observer.disconnect();
+            this._observer = null;
+        }
         this.select.classList.remove('custom-select-hidden');
         this.wrapper.parentNode.removeChild(this.wrapper);
     }

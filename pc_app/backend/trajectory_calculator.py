@@ -32,11 +32,12 @@ class TrajectoryConfig:
     prediction_ticks: int = 3           # 目标预测帧数
     target_offset_x: int = 0            # 瞄准偏移 X (像素)
     target_offset_y: int = 0            # 瞄准偏移 Y (像素)
-    min_confidence: float = 0.45        # 最低置信度阈值
-    target_priority: int = 0            # 目标类别优先级 (-1=最近, 0=所有)
+    min_confidence: float = 0.30        # 最低置信度阈值
+    target_priority: int = -1           # 目标类别优先级 (-1=最近, 0=head, 1=body, 2=weapon)
     jitter_amount: float = 0.15         # 随机抖动幅度 (像素)
     smoothing_samples: int = 5          # 指数移动平均的采样窗口
     max_trail_points: int = 200         # 轨迹点最大保留数
+    fov_radius: int = 300               # 自瞄范围 (像素), 0=禁用范围限制
 
 
 @dataclass
@@ -151,9 +152,11 @@ class TrajectoryCalculator:
         aim_x = predicted_x + self.config.target_offset_x
         aim_y = predicted_y + self.config.target_offset_y
 
-        # 4. 计算相对位移
-        raw_dx = aim_x - self._mouse_x
-        raw_dy = aim_y - self._mouse_y
+        # 4. 计算相对位移 (相对目标 PC 屏幕中心)
+        # 采集卡画面坐标 = 目标 PC 屏幕坐标
+        # 鼠标在目标 PC 上从屏幕中心移动到目标位置所需的相对位移
+        raw_dx = aim_x - self._screen_center_x
+        raw_dy = aim_y - self._screen_center_y
 
         # 如果已经在目标附近, 不做移动
         distance = math.sqrt(raw_dx ** 2 + raw_dy ** 2)
@@ -218,7 +221,11 @@ class TrajectoryCalculator:
         """
         选择瞄准目标
 
-        策略: 选择离屏幕中心最近且置信度达标的检测目标
+        策略:
+        1. 过滤置信度达标的目标
+        2. 如果设定了目标类别优先级, 过滤出指定类别
+        3. 如果设定了 FOV, 只选在自瞄范围内的目标
+        4. 选择离屏幕中心最近的目标
         """
         candidates = [
             d for d in detections
@@ -228,10 +235,26 @@ class TrajectoryCalculator:
         if not candidates:
             return None
 
-        # 如果设定了目标类别优先级, 过滤出指定类别
+        # 按目标类别优先级过滤
         if self.config.target_priority >= 0:
-            # 无过滤, 全部候选
-            pass
+            filtered = [d for d in candidates if d.class_id == self.config.target_priority]
+            if filtered:
+                candidates = filtered
+            # 如果没有指定类别的目标, 退而使用所有候选
+
+        # 按 FOV 范围过滤
+        if self.config.fov_radius > 0:
+            fov_sq = self.config.fov_radius ** 2
+            in_fov = [
+                d for d in candidates
+                if (d.cx - self._screen_center_x) ** 2 +
+                   (d.cy - self._screen_center_y) ** 2 <= fov_sq
+            ]
+            if in_fov:
+                candidates = in_fov
+            # 如果范围内没有目标, 不进行瞄准 (返回 None)
+            else:
+                return None
 
         # 选择离屏幕中心最近的目标
         best = min(

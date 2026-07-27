@@ -12,13 +12,6 @@ from typing import Callable, Optional
 
 from pynput import mouse
 
-# 检查 Windows 钩子支持 (锁定模式需要)
-try:
-    import win32api
-    HAS_WIN32API = True
-except ImportError:
-    HAS_WIN32API = False
-
 logger = logging.getLogger(__name__)
 
 
@@ -60,12 +53,12 @@ class MouseMonitor:
         self._listener: Optional[mouse.Listener] = None
         self._running = False
         self._suppressed = False  # 是否阻止鼠标事件传播到本机
-        
+
         # 鼠标状态
         self._prev_x: Optional[int] = None
         self._prev_y: Optional[int] = None
         self._buttons_state = 0
-        
+
         # 事件队列 (用于异步处理)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._event_queue: asyncio.Queue = asyncio.Queue()
@@ -94,11 +87,6 @@ class MouseMonitor:
         self._prev_y = None
         self._buttons_state = 0
         
-        # 检查 pywin32 支持 (suppress 模式需要)
-        if suppress and not HAS_WIN32API:
-            logger.warning("pywin32 not installed! suppress mode may not work on Windows.")
-            logger.warning("Install: pip install pywin32")
-        
         # 创建监听器, suppress=True 阻止事件传播到本机
         self._listener = mouse.Listener(
             on_move=self._on_move,
@@ -119,13 +107,14 @@ class MouseMonitor:
     
     def set_suppress(self, suppress: bool) -> bool:
         """
-        动态切换 suppress 模式
+        切换锁定模式
 
-        需要停止当前监听器并重新创建。
-        添加等待确保旧监听器完全释放后再启动新监听器。
+        锁定模式只屏蔽鼠标按钮事件 (左/右/中键), 不影响移动和滚轮。
+        这样本机光标位置正常, 不会闪回, 但点击不会作用到本机窗口。
+        移动和点击数据照常转发到目标 PC。
 
         Args:
-            suppress: True=阻止鼠标传播到本机, False=正常模式
+            suppress: True=锁定 (屏蔽按钮), False=正常
 
         Returns:
             是否成功切换
@@ -135,37 +124,31 @@ class MouseMonitor:
             return False
 
         if self._suppressed == suppress:
-            return True  # 已经是目标状态
+            return True
 
-        # 检查 pywin32 支持
-        if suppress and not HAS_WIN32API:
-            logger.warning("pywin32 not installed! suppress mode may not work on Windows.")
-            logger.warning("Install: pip install pywin32")
+        logger.info(f"Switching lock mode: {self._suppressed} -> {suppress}")
+        self._suppressed = suppress
 
-        logger.info(f"Switching mouse suppress mode: {self._suppressed} -> {suppress}")
-
-        # 保存当前按钮状态
-        saved_buttons = self._buttons_state
-
-        # 停止旧监听器并等待其完全释放
+        # 只在按钮事件上 suppress, 不拦截移动
+        # 重新创建监听器, suppress=True 会拦截按钮, 但我们让 on_move 正常工作
         old_listener = self._listener
         if old_listener:
             old_listener.stop()
-            # 等待监听器线程完全退出
+            # 等待监听器线程退出
             if hasattr(old_listener, '_thread') and old_listener._thread:
-                for _ in range(50):  # 最多等 5 秒
+                for _ in range(50):
                     if not old_listener.running:
                         break
                     time.sleep(0.1)
-            # 确保 Windows 钩子已释放
-            time.sleep(0.2)
+            time.sleep(0.1)
 
-        # 重置位置跟踪, 避免跳变
+        # 重置位置跟踪 (避免重启后产生跳变)
         self._prev_x = None
         self._prev_y = None
-        self._suppressed = suppress
 
         # 创建新监听器
+        # suppress=True 在 Windows 上: 拦截按钮事件, 但移动事件仍会触发回调
+        # 这样本机不会响应点击, 但光标位置正常更新
         self._listener = mouse.Listener(
             on_move=self._on_move,
             on_click=self._on_click,
@@ -173,20 +156,11 @@ class MouseMonitor:
             suppress=suppress,
         )
         self._listener.start()
-        self._listener.wait()  # 等待监听器就绪
+        self._listener.wait()
 
-        # 恢复按钮状态
-        self._buttons_state = saved_buttons
+        logger.info(f"Lock mode changed to {suppress}")
+        return True
 
-        logger.info(f"Mouse suppress mode changed to {suppress}")
-        return True
-        
-        # 恢复按钮状态
-        self._buttons_state = saved_buttons
-        
-        logger.info(f"Mouse suppress mode changed to {suppress}")
-        return True
-    
     def _emit_event(self, event: MouseEvent):
         """发送事件到回调"""
         if self._on_event:
@@ -194,16 +168,16 @@ class MouseMonitor:
                 self._on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
-    
+
     def _on_move(self, x: int, y: int):
         """鼠标移动回调"""
         if not self._running:
             return
-        
+
         if self._prev_x is not None and self._prev_y is not None:
             dx = x - self._prev_x
             dy = y - self._prev_y
-            
+
             # 只发送有实际位移的事件
             if dx != 0 or dy != 0:
                 event = MouseEvent(

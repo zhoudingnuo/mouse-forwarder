@@ -718,6 +718,18 @@ html, body {
     line-height: 1.4;
 }
 
+/* 自动扳机 */
+.trigger-section .form-group {
+    margin-bottom: 8px;
+}
+
+.trigger-section .hint-text {
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.4;
+    margin-top: 2px;
+}
+
 /* 滑块 */
 input[type="range"] {
     -webkit-appearance: none;

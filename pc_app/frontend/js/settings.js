@@ -50,8 +50,8 @@ class SettingsPanel {
             const opt = document.createElement('option');
             opt.value = p.port;
             
-            // 标记 WCH 设备
-            if (p.vid === 0x4348) {
+            // 标记 WCH 设备 (VID 0x1A86 = 运行模式 CDC, 0x4348 = 烧录模式)
+            if (p.vid === 0x1A86 || p.vid === 0x4348) {
                 opt.textContent = `🔗 ${p.port} - ${p.description} (CH32V305)`;
                 opt.style.color = 'var(--accent)';
             } else {

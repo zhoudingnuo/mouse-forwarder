@@ -66,6 +66,59 @@ def encode_packet(buttons: int, dx: int, dy: int, wheel: int = 0) -> bytes:
     return data
 
 
+def encode_packets(buttons: int, dx: int, dy: int, wheel: int = 0) -> list:
+    """
+    编码鼠标数据为多个数据包 (自动拆分大位移)
+    
+    HID 鼠标协议每包只能传 -128~127 的位移，
+    如果鼠标移动很快 (Raw Input 可能让 dx 上千)，
+    需要拆分成多个小包发送。
+    
+    Args:
+        buttons: 按钮状态
+        dx: X 轴相对位移 (任意大小)
+        dy: Y 轴相对位移 (任意大小)
+        wheel: 滚轮增量 (任意大小)
+    
+    Returns:
+        数据包列表 (每个元素是 6 字节 bytes)
+    """
+    packets = []
+    
+    # 拆分大位移为多个 127 的块
+    MAX_STEP = 127
+    
+    # 计算需要多少包 (取 dx/dy/wheel 中最大的)
+    steps = max(abs(dx), abs(dy), abs(wheel), 1)
+    num_packets = (steps + MAX_STEP - 1) // MAX_STEP  # 向上取整
+    
+    for i in range(num_packets):
+        # 每包取一部分
+        chunk_dx = max(-MAX_STEP, min(MAX_STEP, dx))
+        chunk_dy = max(-MAX_STEP, min(MAX_STEP, dy))
+        chunk_wheel = max(-MAX_STEP, min(MAX_STEP, wheel))
+        
+        # 只有最后一包带滚轮和按钮状态
+        if i == num_packets - 1:
+            pkt = encode_packet(buttons, chunk_dx, chunk_dy, chunk_wheel)
+        else:
+            # 中间包: 只传位移, 不传按钮和滚轮
+            pkt = encode_packet(0, chunk_dx, chunk_dy, 0)
+        
+        packets.append(pkt)
+        
+        # 减去已发送的部分
+        dx -= chunk_dx
+        dy -= chunk_dy
+        wheel -= chunk_wheel
+    
+    # 如果没有位移, 至少发一个按钮状态包
+    if not packets:
+        packets.append(encode_packet(buttons, 0, 0, wheel))
+    
+    return packets
+
+
 def decode_packet(data: bytes) -> dict:
     """
     解码串口数据包

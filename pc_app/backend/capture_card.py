@@ -55,19 +55,12 @@ class CaptureCard:
         self._camera_index = index
 
     async def start(self):
-        """启动采集卡捕获 (自动优先使用 MS2130 采集卡)"""
+        """启动采集卡捕获"""
         if self._running:
             logger.warning("CaptureCard already running")
             return
 
         self._loop = asyncio.get_running_loop()
-
-        # 始终优先查找 MS2130 采集卡, 覆盖任何传入的 camera_index
-        ms2130_idx = CaptureCard.find_ms2130()
-        if ms2130_idx >= 0:
-            if ms2130_idx != self._camera_index:
-                logger.info(f"Auto-detected MS2130 at index {ms2130_idx}, overriding camera_index {self._camera_index}")
-            self._camera_index = ms2130_idx
 
         # 短暂延迟, 让 DShow 后端释放
         await asyncio.sleep(0.2)
@@ -179,10 +172,9 @@ class CaptureCard:
                     ret, frame = cap.read()
                     if ret and frame is not None:
                         h, w = frame.shape[:2]
-                        # 标记: 如果默认分辨率不是 640x480, 可能是采集卡
-                        # 注意: 不在这里设置高分辨率, 避免 segfault
-                        is_ms2130 = (w >= 1280)
-                        name = f"Camera {i}" + (" - MS2130" if is_ms2130 else " - 内置摄像头")
+                        # 标记为 MS2130 仅当分辨率 >= 1920 (默认 1080p 的才是采集卡)
+                        is_ms2130 = (w >= 1920)
+                        name = f"Camera {i}" + (" - MS2130" if is_ms2130 else f" - 摄像头 ({w}x{h})")
                         available.append((i, name, is_ms2130))
                     cap.release()
             except Exception:
@@ -194,31 +186,34 @@ class CaptureCard:
         """
         自动查找 MS2130 采集卡
 
-        逐个测试摄像头, 每个测试完立即释放, 避免 DShow 后端冲突。
-        先测非 0 索引, 跳过内置摄像头。
+        用 1080p 分辨率区分 MS2130 和内置摄像头:
+        - MS2130 支持 1920x1080
+        - 内置摄像头通常最高 1280x720
+        逐个测试, 每个测试完释放并等待, 避免 DShow 冲突。
         """
-        candidates = [1, 2, 8, 3, 4, 5, 6, 7, 9]
-
-        for idx in candidates:
+        # 测试所有可能的索引
+        for idx in range(10):
+            cap = None
             try:
-                # 打开并测试
                 cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
                 if cap is None or not cap.isOpened():
-                    if cap is not None:
-                        cap.release()
-                    time.sleep(0.1)  # 让 DShow 后端释放
+                    time.sleep(0.2)
                     continue
 
-                # 读一帧确认能工作
+                # 读一帧确认可用
                 ret, frame = cap.read()
                 if not ret or frame is None:
-                    cap.release()
-                    time.sleep(0.1)
+                    if cap:
+                        cap.release()
+                    time.sleep(0.2)
                     continue
 
-                # 尝试设置 720p — MS2130 支持, 内置摄像头不支持
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                h, w = frame.shape[:2]
+                logger.info(f"  Camera {idx}: default {w}x{h}")
+
+                # 尝试设置 1080p
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 for _ in range(3):
                     cap.read()
                     time.sleep(0.02)
@@ -226,25 +221,30 @@ class CaptureCard:
                 test_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 test_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 cap.release()
-                time.sleep(0.1)  # 让 DShow 后端释放
+                cap = None
+                time.sleep(0.3)  # 等待 DShow 完全释放
 
-                if test_w >= 1280:
+                if test_w >= 1920 and test_h >= 1080:
                     logger.info(f"MS2130 found at index {idx} ({test_w}x{test_h})")
                     return idx
+                elif test_w >= 1280:
+                    logger.info(f"  Camera {idx}: {test_w}x{test_h} (720p, not MS2130)")
                 else:
-                    logger.info(f"Camera {idx} = {test_w}x{test_h} (not MS2130)")
+                    logger.info(f"  Camera {idx}: {test_w}x{test_h} (low res, not MS2130)")
 
             except Exception as e:
-                logger.warning(f"Camera {idx} test failed: {e}")
-                try:
-                    cap.release()
-                except Exception:
-                    pass
+                logger.warning(f"  Camera {idx} test failed: {e}")
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                time.sleep(0.3)
                 continue
 
-        # 回退: 直接返回 index 1 (最可能的 MS2130 位置)
-        logger.warning("MS2130 not detected, falling back to camera 1")
-        return 1
+        # 回退: 返回 index 0 (最可能的 MS2130 位置)
+        logger.warning("MS2130 not detected via 1080p test, falling back to camera 0")
+        return 0
         """
         自动查找 MS2130 采集卡
 

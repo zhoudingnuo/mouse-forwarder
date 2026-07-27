@@ -22,9 +22,9 @@ class SerialForwarder:
     提供数据发送和连接管理功能。
     """
     
-    # CH32V305 CDC 的 VID/PID
-    WCH_VID = 0x4348
-    WCH_PID_CDC = 0x55E1
+    # CH32V305 CDC 的 VID/PID (实际固件使用 WCH 官方 VID)
+    WCH_VID = 0x1A86
+    WCH_PID_CDC = 0xFE0C
     
     def __init__(self, port: Optional[str] = None, baudrate: int = 115200):
         self._port: Optional[str] = port
@@ -120,7 +120,7 @@ class SerialForwarder:
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
                     timeout=0.1,
-                    write_timeout=0.1,
+                    write_timeout=0.01,
                 )
                 self._connected = self._serial.is_open
                 logger.info(f"Connected to {self._port} at {self._baudrate} baud")
