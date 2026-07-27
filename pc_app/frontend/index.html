@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" 
+          content="default-src 'self'; 
+                 connect-src 'self' ws://127.0.0.1:*;
+                 style-src 'self' 'unsafe-inline';
+                 script-src 'self';
+                 img-src 'self' data:;">
+    <title>Mouse Forwarder - CH32V305</title>
+    <link rel="stylesheet" href="css/theme.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 顶部栏 -->
+        <header id="topbar">
+            <div class="logo">
+                Mouse Forwarder <span>v1.0</span>
+            </div>
+            <div class="status-indicators">
+                <div class="indicator" id="ind-mouse">
+                    <span class="dot" id="dot-mouse"></span>
+                    <span id="label-mouse">鼠标</span>
+                </div>
+                <div class="indicator" id="ind-serial">
+                    <span class="dot" id="dot-serial"></span>
+                    <span id="label-serial">串口</span>
+                </div>
+                <div class="indicator" id="ind-ws">
+                    <span class="dot ok" id="dot-ws"></span>
+                    <span id="label-ws">已连接</span>
+                </div>
+                <div class="indicator" id="ind-capture">
+                    <span class="dot" id="dot-capture"></span>
+                    <span id="label-capture">采集: 待命</span>
+                </div>
+                <div class="indicator" id="ind-lock">
+                    <span class="dot" id="dot-lock"></span>
+                    <span id="label-lock">锁定: 关</span>
+                </div>
+            </div>
+            <div class="window-controls" id="window-controls">
+                <button class="win-btn win-min" id="btn-min" title="最小化">─</button>
+                <button class="win-btn win-max" id="btn-max" title="最大化">□</button>
+                <button class="win-btn win-close" id="btn-close" title="关闭">×</button>
+            </div>
+        </header>
+
+        <!-- 侧边栏 -->
+        <aside id="sidebar">
+            <div class="sidebar-section serial-config">
+                <h3>串口设置</h3>
+                <div class="form-group">
+                    <label for="port-select">端口</label>
+                    <select id="port-select">
+                        <option value="">-- 自动检测 --</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="baud-input">波特率</label>
+                    <input type="text" id="baud-input" value="115200" 
+                           readonly style="opacity:0.6;cursor:not-allowed;">
+                </div>
+                <div class="form-group" style="display:flex;gap:6px;">
+                    <button class="btn primary" id="btn-connect">连接</button>
+                    <button class="btn danger" id="btn-disconnect" disabled>断开</button>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-sm" id="btn-refresh-ports">
+                        ↻ 刷新端口列表
+                    </button>
+                </div>
+            </div>
+
+            <!-- 锁定模式 -->
+            <div class="sidebar-section lock-section">
+                <h3>锁定模式</h3>
+                <div class="form-group">
+                    <button class="btn danger" id="btn-lock-mode">🔒 锁定模式 (关)</button>
+                </div>
+                <div class="form-group">
+                    <div class="status-line" id="lock-status-line">
+                        <span class="dot" id="dot-lock-status"></span>
+                        <span id="lock-status-text">未锁定</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="hint-text">锁定后鼠标只转发到目标 PC, 按 Esc 退出</div>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>固件烧录</h3>
+                <div class="form-group">
+                    <label>芯片型号</label>
+                    <select id="chip-select">
+                        <option value="CH32V305" selected>CH32V305</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>固件文件 (.hex/.bin)</label>
+                    <div style="display:flex;gap:4px;">
+                        <input type="text" id="firmware-path" readonly placeholder="选择文件..." style="flex:1;">
+                        <button class="btn btn-sm" id="btn-browse">浏览</button>
+                    </div>
+                </div>
+                <div class="form-group" style="display:flex;gap:6px;">
+                    <button class="btn primary" id="btn-flash">烧录</button>
+                    <button class="btn" id="btn-detect-bootloader">检测</button>
+                </div>
+                <div id="flash-status" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>统计信息</h3>
+                <div class="stats-list">
+                    <div class="stat-row">
+                        <span class="stat-label">鼠标事件</span>
+                        <span class="stat-value" id="stat-events">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">已发送包</span>
+                        <span class="stat-value" id="stat-packets">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">已发送字节</span>
+                        <span class="stat-value" id="stat-bytes">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">运行时间</span>
+                        <span class="stat-value" id="stat-uptime">00:00</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">AI 轨迹</span>
+                        <span class="stat-value" id="stat-trajectory">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 目标检测与轨迹控制 -->
+            <div class="sidebar-section detection-section">
+                <h3>目标检测</h3>
+                <div class="form-group">
+                    <label>模型状态</label>
+                    <div class="status-line" id="det-model-status">
+                        <span class="dot"></span> 未加载
+                    </div>
+                </div>
+                <div class="form-group" style="display:flex;gap:6px;">
+                    <button class="btn primary" id="btn-capture-start">启动采集</button>
+                    <button class="btn danger" id="btn-capture-stop" disabled>停止</button>
+                </div>
+                <div class="form-group">
+                    <label>摄像头</label>
+                    <select id="camera-select">
+                        <option value="0">Camera 0</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <button class="btn btn-sm" id="btn-refresh-cameras">↻ 刷新摄像头</button>
+                </div>
+                <div class="form-group">
+                    <div class="status-line" id="capture-status-line">
+                        <span class="dot" id="dot-capture-status"></span>
+                        <span id="capture-status-text">待启动</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <button class="btn primary" id="btn-toggle-video">📹 显示画面: 开</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section trajectory-section">
+                <h3>AI 轨迹</h3>
+                <div class="form-group" style="display:flex;gap:6px;">
+                    <button class="btn" id="btn-trajectory">启用轨迹</button>
+                    <button class="btn btn-sm" id="btn-trajectory-clear">清空</button>
+                </div>
+                <div class="form-group">
+                    <label>平滑度 <span id="lbl-smooth">0.35</span></label>
+                    <input type="range" id="slider-smooth" min="0.05" max="0.95" step="0.05" value="0.35">
+                </div>
+                <div class="form-group">
+                    <label>最大步长 <span id="lbl-maxstep">10</span>px</label>
+                    <input type="range" id="slider-maxstep" min="1" max="30" step="1" value="10">
+                </div>
+                <div class="form-group">
+                    <label>置信度 <span id="lbl-confidence">0.45</span></label>
+                    <input type="range" id="slider-confidence" min="0.10" max="0.95" step="0.05" value="0.45">
+                </div>
+                <div class="form-group row-group">
+                    <div class="offset-group">
+                        <label>偏移 X</label>
+                        <input type="number" id="offset-x" value="0" min="-100" max="100" class="num-input">
+                    </div>
+                    <div class="offset-group">
+                        <label>偏移 Y</label>
+                        <input type="number" id="offset-y" value="0" min="-100" max="100" class="num-input">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>抖动 <span id="lbl-jitter">0.15</span>px</label>
+                    <input type="range" id="slider-jitter" min="0" max="1.0" step="0.05" value="0.15">
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容区 -->
+        <main id="main">
+            <!-- 内容切换标签 -->
+            <div class="content-tabs">
+                <button class="tab-btn active" data-tab="mouse">鼠标</button>
+                <button class="tab-btn" data-tab="capture">采集卡</button>
+            </div>
+
+            <!-- 鼠标实时数据面板 -->
+            <div id="mouse-panel" class="content-panel active">
+                <div class="mouse-display" id="mouse-display">
+                    <div class="mouse-icon">🖱</div>
+                    <div class="mouse-coords">
+                        <div class="coord-group">
+                            <div class="coord-label">Delta X</div>
+                            <div class="coord-value" id="coord-dx">0</div>
+                        </div>
+                        <div class="coord-group">
+                            <div class="coord-label">Delta Y</div>
+                            <div class="coord-value" id="coord-dy">0</div>
+                        </div>
+                    </div>
+                    <div class="mouse-buttons">
+                        <div class="mouse-btn-state">
+                            <span class="btn-indicator" id="btn-left"></span>
+                            左键
+                        </div>
+                        <div class="mouse-btn-state">
+                            <span class="btn-indicator" id="btn-right"></span>
+                            右键
+                        </div>
+                        <div class="mouse-btn-state">
+                            <span class="btn-indicator" id="btn-middle"></span>
+                            中键
+                        </div>
+                    </div>
+                    <div class="mouse-wheel">
+                        滚轮: <span class="wheel-value" id="wheel-value">0</span>
+                    </div>
+                    <div class="mouse-stream">
+                        <div class="stream-bar">
+                            <span>数据流</span>
+                            <div class="bar">
+                                <div class="bar-fill" id="stream-bar"></div>
+                            </div>
+                            <span id="stream-rate">0 pkt/s</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 采集卡画面面板 -->
+            <div id="capture-panel" class="content-panel capture-panel">
+                <div class="capture-video-container">
+                    <div class="video-wrapper">
+                        <img id="capture-video" class="capture-video-img" style="display:none;" alt="采集卡画面">
+                        <canvas id="capture-overlay" class="capture-overlay"></canvas>
+                    </div>
+                    <div class="capture-empty-state" id="capture-empty">
+                        <div class="empty-icon">📷</div>
+                        <p>采集卡未启动</p>
+                        <p class="hint">在左侧侧边栏点击"启动采集"开始</p>
+                    </div>
+                    <div class="capture-stats-bar">
+                        <span class="cs-item">
+                            <span class="cs-label">状态</span>
+                            <span class="cs-value" id="capture-status">未启动</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">检测</span>
+                            <span class="cs-value" id="capture-detections">0</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">推理</span>
+                            <span class="cs-value" id="capture-inference">0ms</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">分辨率</span>
+                            <span class="cs-value" id="capture-resolution">-</span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 日志面板 -->
+            <div id="log-panel">
+                <div class="log-header">
+                    <span>日志</span>
+                    <button class="btn btn-sm" id="btn-clear-log">清空</button>
+                </div>
+                <div class="log-entries" id="log-entries"></div>
+            </div>
+        </main>
+
+        <!-- 状态栏 -->
+        <footer id="statusbar">
+            <span class="status-item" id="sb-mouse">
+                <span class="dot" id="sb-dot-mouse"></span>
+                鼠标: 等待中
+            </span>
+            <span class="status-item" id="sb-serial">
+                <span class="dot" id="sb-dot-serial"></span>
+                串口: 未连接
+            </span>
+            <span class="status-spacer"></span>
+            <span class="status-item" id="sb-packets">已发送: 0</span>
+        </footer>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="js/ws_client.js"></script>
+    <script src="js/custom_select.js"></script>
+    <script src="js/mouse_panel.js"></script>
+    <script src="js/settings.js"></script>
+    <script src="js/flash_panel.js"></script>
+    <script src="js/capture_panel.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

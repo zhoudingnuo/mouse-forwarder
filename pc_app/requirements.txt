@@ -1,0 +1,10 @@
+# Mouse Forwarder - Python 依赖
+
+# 鼠标捕获
+pynput>=1.7.0
+
+# 串口通信
+pyserial>=3.5
+
+# WebSocket 服务器
+websockets>=12.0

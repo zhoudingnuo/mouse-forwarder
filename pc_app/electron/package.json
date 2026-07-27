@@ -1,0 +1,15 @@
+{
+  "name": "mouse-forwarder",
+  "version": "1.0.0",
+  "description": "CH32V305 USB 鼠标转发器 - 本地桌面应用",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "set NODE_ENV=development && electron ."
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}

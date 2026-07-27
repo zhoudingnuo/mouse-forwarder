@@ -1,0 +1,1025 @@
+/* ============================================================
+   theme.css - Mouse Forwarder 暗色主题
+   参考 Multi3DViz 的 ZCode 风格深色主题
+   ============================================================ */
+
+/* 设计令牌 */
+:root {
+    --bg:            #1e1e1e;
+    --bg-elev-1:     #252526;
+    --bg-elev-2:     #2d2d2d;
+    --bg-inset:      #181818;
+    --bg-hover:      #333333;
+    --border:        #3c3c3c;
+    --border-light:  #4a4a4a;
+    --text:          #cccccc;
+    --text-muted:    #858585;
+    --text-dim:      #5a5a5a;
+    --accent:        #4ec9b0;
+    --accent-dim:    #3a9a8a;
+    --accent-bg:     rgba(78, 201, 176, 0.1);
+    --status-ok:     #4ec9b0;
+    --status-warn:   #dcdcaa;
+    --status-err:    #f48771;
+    --scrollbar-bg:  #1e1e1e;
+    --scrollbar:     #424242;
+    --scrollbar-hov: #555555;
+    --font:          'Segoe UI', 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono:     'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Menlo', monospace;
+    --radius:        4px;
+    --radius-sm:     2px;
+    --shadow:        0 2px 8px rgba(0,0,0,0.3);
+}
+
+/* 全局重置 */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* 选择文本颜色 */
+::selection {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: var(--scrollbar-bg);
+}
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-hov);
+}
+
+/* ============================================================
+   Layout - 网格布局
+   ============================================================ */
+#app {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    grid-template-rows: 40px 1fr 26px;
+    grid-template-areas:
+        "topbar     topbar"
+        "sidebar    main"
+        "statusbar  statusbar";
+    height: 100vh;
+    width: 100vw;
+}
+
+/* ============================================================
+   顶部栏 (可拖拽区域)
+   ============================================================ */
+#topbar {
+    grid-area: topbar;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    user-select: none;
+    -webkit-app-region: drag;
+    height: 40px;
+}
+
+#topbar .logo {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+}
+
+#topbar .logo span {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+#topbar .status-indicators {
+    display: flex;
+    gap: 16px;
+    margin-left: auto;
+    -webkit-app-region: no-drag;
+}
+
+/* 窗口控制按钮 */
+.window-controls {
+    display: flex;
+    -webkit-app-region: no-drag;
+    margin-right: -12px;
+    height: 40px;
+}
+
+.win-btn {
+    width: 46px;
+    height: 40px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+    font-family: var(--font);
+}
+
+.win-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+}
+
+.win-btn.win-close:hover {
+    background: #e81123;
+    color: #ffffff;
+}
+
+#topbar .indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+#topbar .indicator .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--status-err);
+    transition: background 0.3s ease;
+}
+
+#topbar .indicator .dot.ok {
+    background: var(--status-ok);
+    box-shadow: 0 0 6px rgba(78, 201, 176, 0.4);
+}
+
+#topbar .indicator .dot.warn {
+    background: var(--status-warn);
+}
+
+/* ============================================================
+   侧边栏
+   ============================================================ */
+#sidebar {
+    grid-area: sidebar;
+    background: var(--bg-elev-1);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+
+.sidebar-section {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-section h3 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+/* 串口设置 */
+.serial-config .form-group {
+    margin-bottom: 8px;
+}
+
+.serial-config label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 3px;
+}
+
+.serial-config select,
+.serial-config input {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.serial-config select:focus,
+.serial-config input:focus {
+    border-color: var(--accent);
+}
+
+/* 侧边栏通用输入框 (固件路径等) */
+#sidebar input[type="text"],
+#sidebar input[type="number"] {
+    padding: 5px 8px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+#sidebar input[type="text"]:focus,
+#sidebar input[type="number"]:focus {
+    border-color: var(--accent);
+}
+
+/* 按钮 */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elev-2);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+    width: 100%;
+}
+
+.btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-light);
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+.btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg);
+    font-weight: 600;
+}
+
+.btn.primary:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+}
+
+.btn.danger {
+    color: var(--status-err);
+    border-color: var(--status-err);
+}
+
+.btn.danger:hover {
+    background: rgba(244, 135, 113, 0.1);
+}
+
+.btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btn-sm {
+    padding: 3px 10px;
+    font-size: 11px;
+}
+
+/* 统计信息 */
+.stats-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    padding: 2px 0;
+}
+
+.stat-row .stat-label {
+    color: var(--text-muted);
+}
+
+.stat-row .stat-value {
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+/* ============================================================
+   主内容区
+   ============================================================ */
+#main {
+    grid-area: main;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    overflow: hidden;
+}
+
+/* 内容标签切换 */
+.content-tabs {
+    display: flex;
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    padding: 0 8px;
+    flex-shrink: 0;
+}
+
+.tab-btn {
+    padding: 8px 16px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    font-family: var(--font);
+}
+
+.tab-btn:hover {
+    color: var(--text);
+    background: var(--bg-hover);
+}
+
+.tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+
+.content-panel {
+    display: none;
+    flex: 1;
+    overflow: hidden;
+}
+
+.content-panel.active {
+    display: flex;
+}
+
+/* 采集卡画面面板 */
+#capture-panel {
+    flex-direction: column;
+    background: #000;
+    position: relative;
+}
+
+.capture-video-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background: #000;
+    overflow: hidden;
+}
+
+.video-wrapper {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    background: #0a0a0a;
+}
+
+.capture-video-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    position: absolute;
+}
+
+.capture-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.capture-empty-state {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 80px 40px;
+}
+
+.capture-empty-state .empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.3;
+}
+
+.capture-empty-state p {
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: var(--text-muted);
+}
+
+.capture-empty-state .hint {
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.capture-stats-bar {
+    display: flex;
+    gap: 24px;
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.7);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.capture-stats-bar .cs-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.capture-stats-bar .cs-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+}
+
+.capture-stats-bar .cs-value {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+}
+
+/* 鼠标实时数据面板 (保持在内容标签系统内) */
+#mouse-panel {
+    flex: 1;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    position: relative;
+}
+
+#mouse-panel.active {
+    display: flex;
+}
+
+.mouse-display {
+    text-align: center;
+    padding: 40px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    min-width: 400px;
+}
+
+.mouse-display .mouse-icon {
+    font-size: 48px;
+    margin-bottom: 20px;
+    opacity: 0.6;
+    transition: opacity 0.3s;
+}
+
+.mouse-display.active .mouse-icon {
+    opacity: 1;
+}
+
+.mouse-coords {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-bottom: 20px;
+}
+
+.mouse-coords .coord-group {
+    text-align: center;
+}
+
+.mouse-coords .coord-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.mouse-coords .coord-value {
+    font-size: 32px;
+    font-family: var(--font-mono);
+    font-weight: 300;
+    color: var(--accent);
+    min-width: 60px;
+    display: inline-block;
+}
+
+.mouse-coords .coord-value.negative {
+    color: var(--status-warn);
+}
+
+/* 按钮状态 */
+.mouse-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.mouse-btn-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    transition: all 0.15s;
+}
+
+.mouse-btn-state .btn-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: all 0.15s;
+}
+
+.mouse-btn-state .btn-indicator.active {
+    background: var(--status-ok);
+    box-shadow: 0 0 8px rgba(78, 201, 176, 0.5);
+}
+
+.mouse-btn-state .btn-indicator.active.right {
+    background: var(--status-err);
+    box-shadow: 0 0 8px rgba(244, 135, 113, 0.5);
+}
+
+/* 滚轮指示 */
+.mouse-wheel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.mouse-wheel .wheel-value {
+    font-family: var(--font-mono);
+    color: var(--text);
+    font-size: 14px;
+    min-width: 20px;
+}
+
+/* 数据流指示 */
+.mouse-stream {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.mouse-stream .stream-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.mouse-stream .stream-bar .bar {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-elev-2);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.mouse-stream .stream-bar .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s;
+}
+
+/* ============================================================
+   目标检测 & 轨迹控制面板
+   ============================================================ */
+.detection-section .form-group,
+.trajectory-section .form-group {
+    margin-bottom: 8px;
+}
+
+.detection-section label,
+.trajectory-section label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 3px;
+}
+
+.detection-section select,
+.trajectory-section select {
+    width: 100%;
+    padding: 5px 8px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+}
+
+.detection-section select:focus,
+.trajectory-section select:focus {
+    border-color: var(--accent);
+}
+
+.detection-section select option,
+.trajectory-section select option {
+    background: var(--bg-elev-1);
+    color: var(--text);
+}
+
+/* 状态行 */
+.status-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    padding: 4px 8px;
+    background: var(--bg-inset);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.status-line .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--status-err);
+    flex-shrink: 0;
+}
+
+.status-line .dot.ok {
+    background: var(--status-ok);
+    box-shadow: 0 0 6px rgba(78, 201, 176, 0.4);
+}
+
+.status-line .dot.warn {
+    background: var(--status-warn);
+}
+
+/* 锁定模式 */
+.lock-section .form-group {
+    margin-bottom: 8px;
+}
+
+.lock-section .hint-text {
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
+/* 滑块 */
+input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: var(--bg-elev-2);
+    border-radius: 2px;
+    outline: none;
+    border: none;
+    padding: 0;
+    margin: 6px 0;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg-elev-1);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+    background: var(--accent-dim);
+}
+
+/* 数值输入 */
+.num-input {
+    width: 100%;
+    padding: 4px 6px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+    text-align: center;
+}
+
+.num-input:focus {
+    border-color: var(--accent);
+}
+
+/* 偏移量行 */
+.row-group {
+    display: flex;
+    gap: 8px;
+}
+
+.offset-group {
+    flex: 1;
+}
+
+.offset-group label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 3px;
+}
+
+/* 标签数值 */
+#lbl-smooth,
+#lbl-maxstep,
+#lbl-confidence,
+#lbl-jitter {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+/* 空状态 */
+.empty-state {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px;
+}
+
+.empty-state .empty-icon {
+    font-size: 36px;
+    margin-bottom: 12px;
+    opacity: 0.3;
+}
+
+.empty-state p {
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.empty-state .hint {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+/* 日志面板 */
+#log-panel {
+    height: 150px;
+    background: var(--bg-inset);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+
+#log-panel .log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+#log-panel .log-entries {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+#log-panel .log-entry {
+    padding: 1px 12px;
+    line-height: 1.6;
+    white-space: nowrap;
+}
+
+#log-panel .log-entry .log-time {
+    color: var(--text-dim);
+    margin-right: 8px;
+}
+
+#log-panel .log-entry .log-level {
+    display: inline-block;
+    width: 36px;
+    font-weight: 600;
+}
+
+#log-panel .log-entry.log-info .log-level {
+    color: var(--accent);
+}
+
+#log-panel .log-entry.log-warn .log-level {
+    color: var(--status-warn);
+}
+
+#log-panel .log-entry.log-err .log-level {
+    color: var(--status-err);
+}
+
+#log-panel .log-entry.log-ok .log-level {
+    color: var(--status-ok);
+}
+
+/* ============================================================
+   状态栏
+   ============================================================ */
+#statusbar {
+    grid-area: statusbar;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    background: var(--bg-elev-1);
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+    gap: 16px;
+    user-select: none;
+}
+
+#statusbar .status-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+#statusbar .status-item .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--status-err);
+}
+
+#statusbar .status-item .dot.ok {
+    background: var(--status-ok);
+}
+
+#statusbar .status-spacer {
+    flex: 1;
+}
+
+/* ============================================================
+   自定义下拉框 (替代原生 select, 解决 Windows 白底问题)
+   ============================================================ */
+.custom-select {
+    position: relative;
+    width: 100%;
+    user-select: none;
+}
+
+.custom-select .select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: border-color 0.2s;
+    min-height: 26px;
+}
+
+.custom-select .select-trigger:hover {
+    border-color: var(--border-light);
+}
+
+.custom-select .select-trigger .arrow {
+    font-size: 8px;
+    color: var(--text-muted);
+    transition: transform 0.2s;
+}
+
+.custom-select.open .select-trigger .arrow {
+    transform: rotate(180deg);
+}
+
+.custom-select .select-trigger .arrow::after {
+    content: '▼';
+}
+
+.custom-select .select-options {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: var(--bg-elev-1);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    max-height: 160px;
+    overflow-y: auto;
+    box-shadow: var(--shadow);
+}
+
+.custom-select.open .select-options {
+    display: block;
+}
+
+.custom-select .select-option {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.custom-select .select-option:hover {
+    background: var(--bg-hover);
+}
+
+.custom-select .select-option.selected {
+    color: var(--accent);
+    background: var(--accent-bg);
+}
+
+.custom-select .select-option + .select-option {
+    border-top: 1px solid var(--border);
+}
+
+/* 隐藏原生 select */
+select.custom-select-hidden {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+/* ============================================================
+   动画
+   ============================================================ */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+    animation: fadeIn 0.2s ease-out;
+}
