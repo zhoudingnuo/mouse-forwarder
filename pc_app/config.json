@@ -1,5 +1,6 @@
 {
   "trajectory": {
+    "enabled": false,
     "smooth_factor": 0.35,
     "max_step_px": 10,
     "min_confidence": 0.6,
@@ -10,7 +11,7 @@
     "prediction_ticks": 3,
     "fov_radius": 120,
     "trigger_enabled": false,
-    "trigger_threshold": 25,
+    "trigger_threshold": 30,
     "invert_ai_x": false,
     "invert_ai_y": false,
     "kp": 0.15,

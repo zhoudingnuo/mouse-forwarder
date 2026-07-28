@@ -86,19 +86,24 @@ class MouseForwarderBackend:
         # 持久化配置 (必须在其他配置之前加载)
         self.config = Config()
         
+        # 扳机参数默认值 (稍后被配置覆盖)
+        self._trigger_enabled = False
+        self._trigger_threshold = 5
+        self._trigger_armed = False
+        self._trigger_last_fire = 0
+
         # 从持久化配置恢复轨迹参数
         traj_cfg = self.config.get('trajectory', default={})
         if traj_cfg:
             for k, v in traj_cfg.items():
                 if hasattr(self.trajectory.config, k):
                     setattr(self.trajectory.config, k, v)
-            # 从持久化配置恢复轨迹参数 (但不恢复 enabled 状态, 需手动开启)
-            saved_enabled = traj_cfg.get('enabled', False)
-            if 'enabled' in traj_cfg:
-                del traj_cfg['enabled']
-            for k, v in traj_cfg.items():
-                if hasattr(self.trajectory.config, k):
-                    setattr(self.trajectory.config, k, v)
+            # 恢复扳机参数 (不在 TrajectoryConfig 里, 单独处理)
+            if 'trigger_enabled' in traj_cfg:
+                self._trigger_enabled = bool(traj_cfg['trigger_enabled'])
+            if 'trigger_threshold' in traj_cfg:
+                self._trigger_threshold = int(traj_cfg['trigger_threshold'])
+            # 强制轨迹禁用 (用户需手动开启)
             self._trajectory_enabled = False
             self.trajectory.config.enabled = False
             logger.info(f"Loaded trajectory config from saved settings")
@@ -128,10 +133,6 @@ class MouseForwarderBackend:
         self._show_video = True  # 默认显示画面
         self._lock_mode = False  # 锁定模式: 全屏黑幕
         self._keyboard_listener = None  # Escape 键监听器
-        self._trigger_enabled = False  # 自动扳机
-        self._trigger_threshold = 5  # 自动扳机触发阈值 (像素)
-        self._trigger_armed = False  # 扳机状态 (避免重复触发)
-        self._trigger_last_fire = 0  # 上次触发时间
         
         # 管线帧率统计
         self._pipeline_fps = 0.0
@@ -256,6 +257,8 @@ class MouseForwarderBackend:
             
             # 加载模型 (在后台线程中执行, 避免阻塞)
             await asyncio.to_thread(self.detector.load_model, model_path)
+            # 同步置信度阈值到检测器
+            self.detector.CONFIDENCE_THRESHOLD = self.trajectory.config.min_confidence
             # 更新类别名称 (与实际模型匹配)
             await asyncio.to_thread(update_class_names, model_path)
             # 保存最后加载的模型路径
@@ -839,6 +842,8 @@ class MouseForwarderBackend:
                         from object_detector import ObjectDetector
                         self.detector = ObjectDetector()
                         await asyncio.to_thread(self.detector.load_model, model_path)
+                    # 同步置信度阈值到检测器
+                    self.detector.CONFIDENCE_THRESHOLD = self.trajectory.config.min_confidence
                     # 更新类别名称 (与实际模型匹配)
                     await asyncio.to_thread(update_class_names, model_path)
 
