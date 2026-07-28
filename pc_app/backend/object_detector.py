@@ -34,7 +34,7 @@ class ObjectDetector:
     # ONNX 模型参数
     INPUT_NAME = "images"
     OUTPUT_NAME = "output0"
-    INPUT_SIZE = 640
+    INPUT_SIZE = 640  # 模型内部处理尺寸 (实际输入为 1080x1920, 由模型内置 resize 处理)
 
     def __init__(self):
         self._session = None
@@ -145,21 +145,22 @@ class ObjectDetector:
     # ================================================================
 
     def _detect_onnx(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
-        """ONNX 模型推理 (自动适配 8/9 通道输出)"""
-        import cv2
+        """ONNX 模型推理 (GPU 预处理 + GPU 推理, 模型内置 resize/normalize)"""
+        import time
 
         orig_h, orig_w = original_shape or frame.shape[:2]
 
-        # 预处理
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (self.INPUT_SIZE, self.INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
-        normalized = resized.astype(np.float32) / 255.0
-        chw = np.transpose(normalized, (2, 0, 1))
-        input_tensor = np.expand_dims(chw, axis=0).astype(np.float32)
+        # 轻微 CPU 预处理: BGR→RGB + HWC→CHW + batch (~4ms)
+        t0 = time.perf_counter()
+        rgb = frame[:, :, ::-1]  # BGR→RGB by slicing (zero-copy)
+        chw = np.ascontiguousarray(rgb.transpose(2, 0, 1))  # HWC→CHW
+        input_tensor = chw[np.newaxis, :].astype(np.uint8)  # add batch dim
+        t1 = time.perf_counter()
 
-        # 推理
+        # GPU 推理 (模型内部自动做 resize + normalize + detect)
         outputs = self._session.run([self.OUTPUT_NAME], {self.INPUT_NAME: input_tensor})
-        output = np.squeeze(outputs[0], axis=0)  # [N, 1344]  N=8 或 9
+        output = np.squeeze(outputs[0], axis=0)
+        t2 = time.perf_counter()
 
         num_channels = output.shape[0]
         cx = output[0, :]
@@ -181,6 +182,11 @@ class ObjectDetector:
 
         mask = final_conf >= self.CONFIDENCE_THRESHOLD
         if not np.any(mask):
+            self._debug_count = getattr(self, '_debug_count', 0) + 1
+            if self._debug_count % 30 == 0:
+                pre_ms = (t1 - t0) * 1000
+                inf_ms = (t2 - t1) * 1000
+                print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post=0ms | total={(t2-t0)*1000:.1f}ms | dets=0')
             return []
 
         cx = cx[mask]
@@ -227,8 +233,19 @@ class ObjectDetector:
                 confidence=float(final_conf[i]),
                 class_id=int(cls_ids[i]),
             ))
+        t3 = time.perf_counter()
 
         detections.sort(key=lambda d: d.confidence, reverse=True)
+
+        # 每 30 帧打印一次各阶段耗时
+        self._debug_count = getattr(self, '_debug_count', 0) + 1
+        if self._debug_count % 30 == 0:
+            pre_ms = (t1 - t0) * 1000
+            inf_ms = (t2 - t1) * 1000
+            post_ms = (t3 - t2) * 1000
+            total_ms = (t3 - t0) * 1000
+            print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post={post_ms:.1f}ms | total={total_ms:.1f}ms | dets={len(detections)}/{len(keep)}')
+
         return detections[:self.MAX_DETECTIONS]
 
     # ================================================================
