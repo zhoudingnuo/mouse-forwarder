@@ -1156,8 +1156,9 @@ class MouseForwarderBackend:
     # ================================================================
     
     async def _send_state(self):
-        """发送完整状态到前端"""
+        """发送完整状态到前端 (包含所有配置, 用于同步UI)"""
         uptime = time.time() - self.start_time
+        c = self.trajectory.config
         await self._send({
             'type': 'state',
             'mouse_active': self._mouse_active,
@@ -1171,6 +1172,22 @@ class MouseForwarderBackend:
                 'model_loaded': self.detector.is_loaded if self.detector else False,
             },
             'lock_mode': self._lock_mode,
+            # 当前配置 (前端用于同步滑块)
+            'config': {
+                'smooth_factor': c.smooth_factor,
+                'max_step_px': c.max_step_px,
+                'min_confidence': c.min_confidence,
+                'target_offset_x': c.target_offset_x,
+                'target_offset_y': c.target_offset_y,
+                'jitter_amount': c.jitter_amount,
+                'target_priority': c.target_priority,
+                'prediction_ticks': c.prediction_ticks,
+                'fov_radius': c.fov_radius,
+                'trigger_enabled': self._trigger_enabled,
+                'trigger_threshold': self._trigger_threshold,
+                'invert_ai_x': c.invert_ai_x,
+                'invert_ai_y': c.invert_ai_y,
+            },
         })
     
     async def _send(self, data: dict):
