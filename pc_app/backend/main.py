@@ -126,8 +126,7 @@ class MouseForwarderBackend:
         
         self._trajectory_enabled = False
         self._show_video = True  # 默认显示画面
-        self._lock_mode = False  # 锁定模式: 鼠标不控制本机
-        self._old_mouse_speed = None  # 保存原始鼠标速度
+        self._lock_mode = False  # 锁定模式: 全屏黑幕
         self._keyboard_listener = None  # Escape 键监听器
         self._trigger_enabled = False  # 自动扳机
         self._trigger_threshold = 5  # 自动扳机触发阈值 (像素)
@@ -360,6 +359,27 @@ class MouseForwarderBackend:
     # 锁定模式: 鼠标不控制本机, 只转发到目标 PC
     # ================================================================
 
+    def _recenter_loop(self):
+        """
+        光标回中线程 (独立于 pynput 钩子线程)
+
+        在锁定模式下, 每隔 5ms 检查光标位置。
+        超出中心 950×500 范围时调用 SetCursorPos 回中。
+        """
+        while self._lock_mode:
+            try:
+                import win32api
+                x, y = win32api.GetCursorPos()
+                sw = win32api.GetSystemMetrics(0)
+                sh = win32api.GetSystemMetrics(1)
+                cx, cy = sw // 2, sh // 2
+                if abs(x - cx) > 950 or abs(y - cy) > 500:
+                    self.mouse.skip_next_move()
+                    win32api.SetCursorPos((cx, cy))
+            except Exception:
+                pass
+            time.sleep(0.005)
+
     async def _lock_mode_on(self):
         """进入锁定模式: 弹出全屏黑幕, 鼠标不控制本机, 按 Escape 退出"""
         if self._lock_mode:
@@ -368,35 +388,10 @@ class MouseForwarderBackend:
         self._lock_mode = True
         logger.info("Lock mode ON - showing black overlay")
 
-        # 保存当前鼠标速度, 设为最低 (让本机鼠标几乎不动)
-        try:
-            import ctypes
-            from ctypes import wintypes
-            SPI_GETMOUSESPEED = 0x0070
-            SPI_SETMOUSESPEED = 0x0071
-            speed = wintypes.UINT()
-            ctypes.windll.user32.SystemParametersInfoW(SPI_GETMOUSESPEED, 0, ctypes.byref(speed), 0)
-            self._old_mouse_speed = speed.value
-            ctypes.windll.user32.SystemParametersInfoW(SPI_SETMOUSESPEED, 0, ctypes.c_void_p(1), 0)
-            logger.info(f"Mouse speed: {self._old_mouse_speed} -> 1")
-        except Exception as e:
-            logger.warning(f"Failed to set mouse speed: {e}")
-            self._old_mouse_speed = None
+        # 启动独立回中线程 (超出中心 ±480×270 范围时回中)
+        threading.Thread(target=self._recenter_loop, daemon=True).start()
 
-        # 把鼠标光标移到屏幕中心
-        try:
-            import win32api
-            screen_w = win32api.GetSystemMetrics(0)
-            screen_h = win32api.GetSystemMetrics(1)
-            win32api.SetCursorPos(screen_w // 2, screen_h // 2)
-            logger.info(f"Cursor moved to center ({screen_w//2}, {screen_h//2})")
-        except Exception as e:
-            logger.warning(f"Failed to move cursor: {e}")
-
-        # 弹出全屏黑幕 (后台线程)
-        # 注意: 不设置 suppress, 光标可以自由移动
-
-        # 弹出全屏黑幕 (后台线程)
+        # 隐藏系统光标
         self._overlay_thread = None
         self._overlay_root = None
         self._overlay_stop = threading.Event()
@@ -470,20 +465,6 @@ class MouseForwarderBackend:
         self._lock_mode = False
         logger.info("Lock mode OFF")
 
-        # 恢复鼠标速度
-        if self._old_mouse_speed is not None:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                SPI_SETMOUSESPEED = 0x0071
-                ctypes.windll.user32.SystemParametersInfoW(
-                    SPI_SETMOUSESPEED, 0, ctypes.c_void_p(self._old_mouse_speed), 0
-                )
-                logger.info(f"Mouse speed restored to {self._old_mouse_speed}")
-            except Exception as e:
-                logger.warning(f"Failed to restore mouse speed: {e}")
-            self._old_mouse_speed = None
-
         # 关闭全屏黑幕
         if self._overlay_stop:
             self._overlay_stop.set()
@@ -494,9 +475,6 @@ class MouseForwarderBackend:
                 pass
         self._overlay_root = None
         self._overlay_thread = None
-
-        # 恢复鼠标监听器正常模式
-        self.mouse.set_suppress(False)
 
         # 停止键盘监听
         if self._keyboard_listener:
@@ -1027,6 +1005,10 @@ class MouseForwarderBackend:
     def _on_mouse_event(self, event: MouseEvent):
         """鼠标事件回调 (从 pynput 线程直接发送串口)"""
         self.stats['mouse_events'] += 1
+
+        # 过滤 SetCursorPos 回弹事件 (单次位移超过 200px 的直接丢弃)
+        if abs(event.dx) > 200 or abs(event.dy) > 200:
+            return
 
         # 编码并直接发送到串口 (不走 asyncio, 减少延迟)
         packet = encode_packet(event.buttons, event.dx, event.dy, event.wheel)

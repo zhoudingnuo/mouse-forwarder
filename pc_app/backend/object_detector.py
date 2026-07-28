@@ -34,7 +34,7 @@ class ObjectDetector:
     # ONNX 模型参数
     INPUT_NAME = "images"
     OUTPUT_NAME = "output0"
-    INPUT_SIZE = 256
+    INPUT_SIZE = 640
 
     def __init__(self):
         self._session = None

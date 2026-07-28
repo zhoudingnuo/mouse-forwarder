@@ -28,7 +28,7 @@ logger = logging.getLogger('capture')
 
 # 模型参数
 MODEL_PATH = 'best.pt'  # 默认模型 (支持 .pt 和 .onnx)
-INPUT_SIZE = 256  # 模型输入尺寸 256x256
+INPUT_SIZE = 640  # 模型输入尺寸 640x640
 CONF_THRESHOLD = 0.25  # 置信度阈值
 NMS_THRESHOLD = 0.45  # NMS IoU 阈值
 
