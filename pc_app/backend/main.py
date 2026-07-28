@@ -25,6 +25,7 @@ import signal
 import sys
 import time
 import threading
+import queue
 from typing import Any, Optional, List, Tuple
 
 import numpy as np
@@ -138,7 +139,12 @@ class MouseForwarderBackend:
         self._pipeline_fps = 0.0
         self._pipeline_fps_count = 0
         self._pipeline_fps_timer = 0.0
-        
+
+        # 专用鼠标转发线程 (队列+独立线程, 防止串口阻塞导致丢包)
+        self._mouse_queue = queue.Queue(maxsize=200)
+        self._mouse_thread = threading.Thread(target=self._mouse_forward_loop, daemon=True)
+        self._mouse_thread.start()
+
         # 检测管道任务
         self._pipeline_task: Optional[asyncio.Task] = None
         
@@ -1040,22 +1046,21 @@ class MouseForwarderBackend:
     # ================================================================
     
     def _on_mouse_event(self, event: MouseEvent):
-        """鼠标事件回调 (从 pynput 线程直接发送串口)"""
+        """鼠标事件回调 (放入队列, 由转发线程写入串口)"""
         self.stats['mouse_events'] += 1
 
         # 过滤 SetCursorPos 回弹事件 (单次位移超过 200px 的直接丢弃)
         if abs(event.dx) > 200 or abs(event.dy) > 200:
             return
 
-        # 编码并直接发送到串口 (不走 asyncio, 减少延迟)
+        # 放入队列, 由转发线程写入串口 (不阻塞 pynput 回调)
         packet = encode_packet(event.buttons, event.dx, event.dy, event.wheel)
-        if self.serial.is_connected:
-            try:
-                self.serial._serial.write(packet)
-                self.stats['packets_sent'] += 1
-                self.stats['bytes_sent'] += len(packet)
-            except Exception:
-                pass
+        try:
+            self._mouse_queue.put_nowait(packet)
+            self.stats['packets_sent'] += 1
+            self.stats['bytes_sent'] += len(packet)
+        except queue.Full:
+            pass
 
         # 异步通知前端 (不阻塞串口发送)
         if self._loop:
@@ -1063,6 +1068,21 @@ class MouseForwarderBackend:
                 self._notify_mouse_event(event),
                 self._loop
             )
+
+    def _mouse_forward_loop(self):
+        """专用鼠标转发线程: 从队列读数据, 写串口, 不阻塞 pynput"""
+        while True:
+            try:
+                packet = self._mouse_queue.get(timeout=1)
+                if self.serial.is_connected and self.serial._serial:
+                    try:
+                        self.serial._serial.write(packet)
+                    except Exception:
+                        pass
+            except queue.Empty:
+                continue
+            except Exception:
+                continue
 
     async def _notify_mouse_event(self, event: MouseEvent):
         """异步通知前端鼠标事件"""

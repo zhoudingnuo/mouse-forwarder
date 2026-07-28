@@ -1,6 +1,6 @@
 {
   "trajectory": {
-    "enabled": false,
+    "enabled": true,
     "smooth_factor": 0.35,
     "max_step_px": 10,
     "min_confidence": 0.6,
