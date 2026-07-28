@@ -5,12 +5,12 @@
     "min_confidence": 0.6,
     "target_offset_x": 0,
     "target_offset_y": 0,
-    "jitter_amount": 0.15,
+    "jitter_amount": 0.0,
     "target_priority": -1,
     "prediction_ticks": 3,
     "fov_radius": 120,
-    "trigger_enabled": true,
-    "trigger_threshold": 18,
+    "trigger_enabled": false,
+    "trigger_threshold": 25,
     "invert_ai_x": false,
     "invert_ai_y": false,
     "kp": 0.15,
@@ -30,6 +30,6 @@
     "target_h": 1440
   },
   "model": {
-    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\valorant.onnx"
+    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\best.onnx"
   }
 }

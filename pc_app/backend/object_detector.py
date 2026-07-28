@@ -167,14 +167,12 @@ class ObjectDetector:
         w = output[2, :]
         h = output[3, :]
 
-        # 自动适配输出格式:
-        # 9 通道: [cx, cy, w, h, objectness, cls1, cls2, cls3, cls4]
-        # 8 通道: [cx, cy, w, h, cls1, cls2, cls3, cls4]  (标准 YOLOv8)
+        # 自动适配输出格式
         if num_channels == 9:
             conf = 1.0 / (1.0 + np.exp(-output[4, :]))
             cls_scores = output[5:9, :]
         else:
-            conf = 1.0  # 无 objectness, 直接用类别分
+            conf = 1.0
             cls_scores = output[4:8, :]
 
         cls_ids = np.argmax(cls_scores, axis=0)
@@ -192,23 +190,44 @@ class ObjectDetector:
         final_conf = final_conf[mask]
         cls_ids = cls_ids[mask]
 
-        # 映射回原始帧尺寸
+        # 映射回原始帧尺寸 (向量化)
         scale_x = orig_w / self.INPUT_SIZE
         scale_y = orig_h / self.INPUT_SIZE
+        x1 = (cx - w / 2) * scale_x
+        y1 = (cy - h / 2) * scale_y
+        x2 = (cx + w / 2) * scale_x
+        y2 = (cy + h / 2) * scale_y
+
+        # 快速 NMS (向量化计算)
+        indices = np.argsort(-final_conf)
+        keep = []
+        while len(indices) > 0:
+            i = indices[0]
+            keep.append(i)
+            if len(indices) == 1:
+                break
+            # 计算 IOU 矩阵
+            xx1 = np.maximum(x1[i], x1[indices[1:]])
+            yy1 = np.maximum(y1[i], y1[indices[1:]])
+            xx2 = np.minimum(x2[i], x2[indices[1:]])
+            yy2 = np.minimum(y2[i], y2[indices[1:]])
+            inter = np.maximum(0, xx2 - xx1) * np.maximum(0, yy2 - yy1)
+            area_i = (x2[i] - x1[i]) * (y2[i] - y1[i])
+            area_j = (x2[indices[1:]] - x1[indices[1:]]) * (y2[indices[1:]] - y1[indices[1:]])
+            iou = inter / (area_i + area_j - inter + 1e-6)
+            indices = indices[1:][iou < self.NMS_IOU_THRESHOLD]
+            if len(keep) >= self.MAX_DETECTIONS:
+                break
 
         detections = []
-        for i in range(len(cx)):
-            x = (cx[i] - w[i] / 2) * scale_x
-            y = (cy[i] - h[i] / 2) * scale_y
-            bw = w[i] * scale_x
-            bh = h[i] * scale_y
+        for i in keep:
             detections.append(Detection.from_bbox(
-                x=float(x), y=float(y), w=float(bw), h=float(bh),
+                x=float(x1[i]), y=float(y1[i]),
+                w=float(x2[i] - x1[i]), h=float(y2[i] - y1[i]),
                 confidence=float(final_conf[i]),
                 class_id=int(cls_ids[i]),
             ))
 
-        detections = self._nms(detections)
         detections.sort(key=lambda d: d.confidence, reverse=True)
         return detections[:self.MAX_DETECTIONS]
 

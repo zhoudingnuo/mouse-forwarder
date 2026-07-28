@@ -917,6 +917,22 @@ class MouseForwarderBackend:
                     config.invert_ai_x = bool(data['invert_ai_x'])
                 if 'invert_ai_y' in data:
                     config.invert_ai_y = bool(data['invert_ai_y'])
+                if 'kp' in data:
+                    config.kp = float(data['kp'])
+                if 'ki' in data:
+                    config.ki = float(data['ki'])
+                if 'kd' in data:
+                    config.kd = float(data['kd'])
+                if 'integral_limit' in data:
+                    config.integral_limit = float(data['integral_limit'])
+                if 'max_steps_per_frame' in data:
+                    config.max_steps_per_frame = int(data['max_steps_per_frame'])
+                if 'settle_deadzone' in data:
+                    config.settle_deadzone = float(data['settle_deadzone'])
+                if 'unsettle_hysteresis' in data:
+                    config.unsettle_hysteresis = float(data['unsettle_hysteresis'])
+                if 'y_scale' in data:
+                    config.y_scale = float(data['y_scale'])
                 self.trajectory.set_config(config)
                 # 持久化保存所有轨迹配置
                 self.config.set('trajectory', 'smooth_factor', config.smooth_factor)
@@ -932,6 +948,14 @@ class MouseForwarderBackend:
                 self.config.set('trajectory', 'trigger_threshold', self._trigger_threshold)
                 self.config.set('trajectory', 'invert_ai_x', config.invert_ai_x)
                 self.config.set('trajectory', 'invert_ai_y', config.invert_ai_y)
+                self.config.set('trajectory', 'kp', config.kp)
+                self.config.set('trajectory', 'ki', config.ki)
+                self.config.set('trajectory', 'kd', config.kd)
+                self.config.set('trajectory', 'integral_limit', config.integral_limit)
+                self.config.set('trajectory', 'max_steps_per_frame', config.max_steps_per_frame)
+                self.config.set('trajectory', 'settle_deadzone', config.settle_deadzone)
+                self.config.set('trajectory', 'unsettle_hysteresis', config.unsettle_hysteresis)
+                self.config.set('trajectory', 'y_scale', config.y_scale)
                 await self._send({
                     'type': 'trajectory_config_ack',
                     'config': {
@@ -948,6 +972,14 @@ class MouseForwarderBackend:
                         'trigger_threshold': self._trigger_threshold,
                         'invert_ai_x': config.invert_ai_x,
                         'invert_ai_y': config.invert_ai_y,
+                        'kp': config.kp,
+                        'ki': config.ki,
+                        'kd': config.kd,
+                        'integral_limit': config.integral_limit,
+                        'max_steps_per_frame': config.max_steps_per_frame,
+                        'settle_deadzone': config.settle_deadzone,
+                        'unsettle_hysteresis': config.unsettle_hysteresis,
+                        'y_scale': config.y_scale,
                     }
                 })
             
@@ -1187,6 +1219,14 @@ class MouseForwarderBackend:
                 'trigger_threshold': self._trigger_threshold,
                 'invert_ai_x': c.invert_ai_x,
                 'invert_ai_y': c.invert_ai_y,
+                'kp': c.kp,
+                'ki': c.ki,
+                'kd': c.kd,
+                'integral_limit': c.integral_limit,
+                'max_steps_per_frame': c.max_steps_per_frame,
+                'settle_deadzone': c.settle_deadzone,
+                'unsettle_hysteresis': c.unsettle_hysteresis,
+                'y_scale': c.y_scale,
             },
         })
     
@@ -1216,8 +1256,12 @@ def main():
         # 从项目根目录查找
         import os
         possible_paths = [
+            os.path.join(os.path.dirname(__file__), '..', '..', 'best.onnx'),
+            os.path.join(os.path.dirname(__file__), '..', '..', 'best.pt'),
             os.path.join(os.path.dirname(__file__), '..', '..', 'valorant.onnx'),
+            os.path.join(os.path.dirname(__file__), '..', 'best.onnx'),
             os.path.join(os.path.dirname(__file__), '..', 'valorant.onnx'),
+            os.path.join(os.path.dirname(__file__), 'best.onnx'),
             os.path.join(os.path.dirname(__file__), 'valorant.onnx'),
         ]
         for p in possible_paths:
