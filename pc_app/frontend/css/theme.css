@@ -886,6 +886,80 @@ input[type="range"]::-webkit-slider-thumb:hover {
     color: var(--status-ok);
 }
 
+/* 瞄准日志面板 */
+#aim-log-panel {
+    height: 180px;
+    background: var(--bg-inset);
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+}
+
+#aim-log-panel .log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 12px;
+    background: var(--bg-elev-1);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--accent);
+}
+
+#aim-log-panel .aim-log-entries {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+#aim-log-panel .aim-log-entry {
+    padding: 1px 12px;
+    line-height: 1.6;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#aim-log-panel .aim-log-entry .al-time {
+    color: var(--text-dim);
+    flex-shrink: 0;
+}
+
+#aim-log-panel .aim-log-entry .al-icon {
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+}
+
+#aim-log-panel .aim-log-entry .al-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#aim-log-panel .aim-log-entry.al-target {
+    color: #4ec9b0;
+}
+
+#aim-log-panel .aim-log-entry.al-switch {
+    color: #ff9d00;
+}
+
+#aim-log-panel .aim-log-entry.al-step {
+    color: #9cdcfe;
+}
+
+#aim-log-panel .aim-log-entry.al-settle {
+    color: #6a9955;
+}
+
+#aim-log-panel .aim-log-entry.al-search {
+    color: var(--text-muted);
+}
+
 /* ============================================================
    状态栏
    ============================================================ */

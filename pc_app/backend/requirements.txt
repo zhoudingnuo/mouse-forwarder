@@ -18,3 +18,6 @@ onnxruntime>=1.20.0
 # 图像处理
 opencv-python-headless>=4.8.0
 numpy>=1.24.0
+
+# YOLOv8 PyTorch 推理 (*.pt 模型)
+ultralytics>=8.0.0

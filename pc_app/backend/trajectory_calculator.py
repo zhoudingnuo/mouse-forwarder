@@ -27,17 +27,30 @@ logger = logging.getLogger(__name__)
 class TrajectoryConfig:
     """轨迹计算配置"""
     enabled: bool = False               # 总开关
-    smooth_factor: float = 0.35         # 平滑因子 (0-1), 越大越跟手
-    max_step_px: int = 10               # 单步最大像素位移
-    prediction_ticks: int = 3           # 目标预测帧数
-    target_offset_x: int = 0            # 瞄准偏移 X (像素)
-    target_offset_y: int = 0            # 瞄准偏移 Y (像素)
+    smooth_factor: float = 0.40         # 平滑因子 (0-1), 越大越跟手
+    max_step_px: int = 8                # 单步最大像素位移 (越小越稳)
+    prediction_ticks: int = 5           # 目标预测帧数 (补偿推理延迟)
+    target_offset_x: int = 0            # 瞄准偏移 X (目标框宽度的百分比, 如 5=5%)
+    target_offset_y: int = 0            # 瞄准偏移 Y (目标框高度的百分比)
     min_confidence: float = 0.30        # 最低置信度阈值
-    target_priority: int = -1           # 目标类别优先级 (-1=最近, 0=head, 1=body, 2=weapon)
-    jitter_amount: float = 0.15         # 随机抖动幅度 (像素)
-    smoothing_samples: int = 5          # 指数移动平均的采样窗口
+    target_priority: int = 1           # 目标类别优先级 (-1=最近, 0=dropped spike, 1=enemy, 2=planted spike)
+    jitter_amount: float = 0.10         # 随机抖动幅度 (像素)
+    smoothing_samples: int = 8          # 指数移动平均的采样窗口
     max_trail_points: int = 200         # 轨迹点最大保留数
     fov_radius: int = 300               # 自瞄范围 (像素), 0=禁用范围限制
+    target_scale_x: float = 1.0        # 缩放 (检测→目标, 默认 1:1)
+    target_scale_y: float = 1.0        # 缩放
+    invert_ai_x: bool = False          # 反转 AI 轨迹 X 轴
+    invert_ai_y: bool = False          # 反转 AI 轨迹 Y 轴
+    # PID 控制器参数
+    kp: float = 0.35                    # 比例增益 (直接响应偏移)
+    ki: float = 0.02                    # 积分增益 (消除稳态误差, 补偿灵敏度)
+    kd: float = 0.10                    # 微分增益 (抑制过冲)
+    integral_limit: float = 100.0       # 积分限幅 (防积分饱和)
+    max_steps_per_frame: int = 30      # 每帧最多发送的步数
+    settle_deadzone: float = 8.0       # 进入死区的阈值 (像素), 目标在此范围内停止移动
+    unsettle_hysteresis: float = 20.0  # 退出死区的滞回阈值 (像素), 防止抖动
+    y_scale: float = 0.2               # Y 轴幅度缩放 (0.0-1.0), 防抖用
 
 
 @dataclass
@@ -102,6 +115,30 @@ class TrajectoryCalculator:
         self._mouse_x: float = 960
         self._mouse_y: float = 540
 
+        # 锁定目标跟踪 (避免来回切换)
+        self._locked_target_cx: Optional[float] = None
+        self._locked_target_cy: Optional[float] = None
+        self._locked_ref_cx: Optional[float] = None  # 锁定时的参考点 X (所有候选的中心)
+        self._locked_ref_cy: Optional[float] = None  # 锁定时的参考点 Y
+        self._lock_frames: int = 0
+
+        # 到达目标后的冷却计数器 (防止抖动反复触发)
+        self._settled_frames: int = 0
+        # 目标丢失计数器 (模型偶尔漏检时保持锁定)
+        self._missed_frames: int = 0
+
+        # 当前选中的目标 (用于前端画框高亮)
+        self.selected_target: Optional[Detection] = None
+        self.aim_x: float = 0
+        self.aim_y: float = 0
+        self.is_settled: bool = False
+
+        # PID 控制器状态
+        self._integral_x: float = 0.0
+        self._integral_y: float = 0.0
+        self._prev_error_x: float = 0.0
+        self._prev_error_y: float = 0.0
+
         # 统计
         self._trajectories_computed: int = 0
         self._targets_acquired: int = 0
@@ -124,7 +161,15 @@ class TrajectoryCalculator:
 
     def calculate(self, detections: List[Detection]) -> List[Tuple[int, int]]:
         """
-        计算瞄准轨迹
+        计算瞄准轨迹 (PID 控制器 + 检测反馈)
+
+        每帧直接从检测结果计算误差 (目标与屏幕中心的偏移),
+        用 PID 公式计算输出位移:
+          output = Kp * error + Ki * integral + Kd * derivative
+
+        不追踪已发送位移, 依靠检测反馈自然收敛。
+        积分项消除稳态误差 (补偿游戏鼠标灵敏度),
+        微分项抑制过冲。
 
         Args:
             detections: 当前帧的检测结果列表
@@ -136,54 +181,125 @@ class TrajectoryCalculator:
         if not self.config.enabled or not detections:
             self._smooth_x = None
             self._smooth_y = None
+            self.selected_target = None
+            self.is_settled = False
+            self._integral_x = 0.0
+            self._integral_y = 0.0
+            self._prev_error_x = 0.0
+            self._prev_error_y = 0.0
             return []
 
         # 1. 选择目标
         target = self._select_target(detections)
         if target is None:
+            self.selected_target = None
+            self.is_settled = False
+            self._integral_x = 0.0
+            self._integral_y = 0.0
+            self._prev_error_x = 0.0
+            self._prev_error_y = 0.0
             return []
 
+        self.selected_target = target
         self._targets_acquired += 1
 
         # 2. 目标位置预测
         predicted_x, predicted_y = self._predict_target(target.cx, target.cy)
 
-        # 3. 应用瞄准偏移
-        aim_x = predicted_x + self.config.target_offset_x
-        aim_y = predicted_y + self.config.target_offset_y
+        # 3. 应用瞄准偏移 (目标框尺寸的百分比)
+        aim_x = predicted_x + target.w * self.config.target_offset_x / 100.0
+        aim_y = predicted_y + target.h * self.config.target_offset_y / 100.0
+        self.aim_x = aim_x
+        self.aim_y = aim_y
 
-        # 4. 计算相对位移 (相对目标 PC 屏幕中心)
-        # 采集卡画面坐标 = 目标 PC 屏幕坐标
-        # 鼠标在目标 PC 上从屏幕中心移动到目标位置所需的相对位移
-        raw_dx = aim_x - self._screen_center_x
-        raw_dy = aim_y - self._screen_center_y
+        # 4. PID 控制器
+        #    误差 = 目标 - 屏幕中心 (每帧从检测反馈重新获取)
+        error_x = aim_x - self._screen_center_x
+        error_y = aim_y - self._screen_center_y
+        # Y轴误差按 y_scale 缩放后再计算距离, 使 Y 死区同步缩小
+        scaled_ey = error_y * self.config.y_scale
+        distance = math.sqrt(error_x ** 2 + scaled_ey ** 2)
 
-        # 如果已经在目标附近, 不做移动
-        distance = math.sqrt(raw_dx ** 2 + raw_dy ** 2)
-        if distance < 2.0:
+# ── 滞回死区 (从配置读取) ──
+        SETTLE_DEADZONE = self.config.settle_deadzone
+        UNSETTLE_HYST = self.config.unsettle_hysteresis
+
+        if self.is_settled:
+            # 已对准状态: 用较大的滞回阈值
+            if distance < UNSETTLE_HYST:
+                # 保持对准, 不发步数
+                return []
+            else:
+                # 超出滞回范围, 退出对准状态
+                self.is_settled = False
+                self._settled_frames = 0
+        else:
+            # 未对准: 检查是否进入死区
+            if distance < SETTLE_DEADZONE:
+                self._settled_frames += 1
+                if self._settled_frames >= 3:
+                    # 连续 3 帧在死区内 → 标记已对准
+                    self.is_settled = True
+                    self._integral_x = 0.0
+                    self._integral_y = 0.0
+                    self._prev_error_x = 0.0
+                    self._prev_error_y = 0.0
+                return []
+            else:
+                self._settled_frames = 0
+
+        # ── 积分项: 带泄漏 + 近距清零 ──
+        # 误差较小时清零积分, 防止积分饱和导致振荡
+        if distance < 30.0:
+            self._integral_x = 0.0
+            self._integral_y = 0.0
+        else:
+            # 泄漏积分器: 每帧衰减 5%, 防止无限累积
+            self._integral_x = self._integral_x * 0.95 + error_x
+            self._integral_y = self._integral_y * 0.95 + error_y
+            i_limit = self.config.integral_limit
+            self._integral_x = max(-i_limit, min(i_limit, self._integral_x))
+            self._integral_y = max(-i_limit, min(i_limit, self._integral_y))
+
+        # ── 微分项: 误差变化率 ──
+        deriv_x = error_x - self._prev_error_x
+        deriv_y = error_y - self._prev_error_y
+        self._prev_error_x = error_x
+        self._prev_error_y = error_y
+
+        # ── PID 输出: 只发水平/垂直方向中较大的那个 ──
+        #    当目标已经很近时, 优先消除一个轴, 减少无效移动
+        kp = self.config.kp
+        ki = self.config.ki
+        kd = self.config.kd
+        output_x = kp * error_x + ki * self._integral_x + kd * deriv_x
+        output_y = (kp * error_y + ki * self._integral_y + kd * deriv_y) * self.config.y_scale
+
+        # 输出死区: 总输出小于 3px 时不发任何步数
+        output_dist = math.sqrt(output_x ** 2 + output_y ** 2)
+        if output_dist < 3.0:
             return []
 
-        # 5. 指数移动平均平滑
-        if self._smooth_x is None:
-            self._smooth_x = raw_dx
-            self._smooth_y = raw_dy
-        else:
-            alpha = self.config.smooth_factor
-            self._smooth_x = alpha * raw_dx + (1 - alpha) * self._smooth_x
-            self._smooth_y = alpha * raw_dy + (1 - alpha) * self._smooth_y
+        # 应用符号反转
+        if self.config.invert_ai_x:
+            output_x = -output_x
+        if self.config.invert_ai_y:
+            output_y = -output_y
 
-        smooth_dx = self._smooth_x
-        smooth_dy = self._smooth_y
+        # 5. 分解为微移动序列
+        all_steps = self._decompose_movement(output_x, output_y)
 
-        # 6. 分解为微移动序列
-        steps = self._decompose_movement(smooth_dx, smooth_dy)
+        # 6. 限制每帧步数, 防止 USB 堆积
+        max_steps = self.config.max_steps_per_frame
+        if len(all_steps) > max_steps:
+            all_steps = all_steps[:max_steps]
 
-        # 7. 添加到轨迹历史 (用于前端可视化)
+        # 7. 添加到轨迹历史
         self._add_trail_point(aim_x, aim_y)
 
         self._trajectories_computed += 1
 
-        return steps
+        return all_steps
 
     def add_real_mouse_point(self, dx: int, dy: int):
         """添加真实鼠标轨迹点 (用于可视化对比)"""
@@ -205,6 +321,19 @@ class TrajectoryCalculator:
         self._target_history.clear()
         self._smooth_x = None
         self._smooth_y = None
+        self._locked_target_cx = None
+        self._locked_target_cy = None
+        self._locked_ref_cx = None
+        self._locked_ref_cy = None
+        self._lock_frames = 0
+        self._settled_frames = 0
+        self._missed_frames = 0
+        self.selected_target = None
+        self.is_settled = False
+        self._integral_x = 0.0
+        self._integral_y = 0.0
+        self._prev_error_x = 0.0
+        self._prev_error_y = 0.0
         logger.info("Trail cleared")
 
     def get_stats(self) -> dict:
@@ -222,10 +351,9 @@ class TrajectoryCalculator:
         选择瞄准目标
 
         策略:
-        1. 过滤置信度达标的目标
-        2. 如果设定了目标类别优先级, 过滤出指定类别
-        3. 如果设定了 FOV, 只选在自瞄范围内的目标
-        4. 选择离屏幕中心最近的目标
+        1. 过滤置信度、类别、FOV
+        2. 锁定当前目标: 一旦锁定, 每帧找离锁定目标最近的候选 (而非离屏幕中心最近的)
+        3. 解锁条件: 锁定目标连续 30 帧未出现, 或新目标比锁定目标近 50%+ 到中心
         """
         candidates = [
             d for d in detections
@@ -233,6 +361,25 @@ class TrajectoryCalculator:
         ]
 
         if not candidates:
+            # 模型偶尔漏检: 目标可能还在, 保持锁定最多 15 帧
+            if self._locked_target_cx is not None and self._lock_frames > 0:
+                self._missed_frames += 1
+                if self._missed_frames < 15:
+                    return Detection(
+                        x=self._locked_target_cx - 20,
+                        y=self._locked_target_cy - 20,
+                        w=40, h=40,
+                        confidence=0.5,
+                        class_id=0,
+                        cx=self._locked_target_cx,
+                        cy=self._locked_target_cy,
+                    )
+            self._locked_target_cx = None
+            self._locked_target_cy = None
+            self._locked_ref_cx = None
+            self._locked_ref_cy = None
+            self._lock_frames = 0
+            self._missed_frames = 0
             return None
 
         # 按目标类别优先级过滤
@@ -240,7 +387,6 @@ class TrajectoryCalculator:
             filtered = [d for d in candidates if d.class_id == self.config.target_priority]
             if filtered:
                 candidates = filtered
-            # 如果没有指定类别的目标, 退而使用所有候选
 
         # 按 FOV 范围过滤
         if self.config.fov_radius > 0:
@@ -252,26 +398,86 @@ class TrajectoryCalculator:
             ]
             if in_fov:
                 candidates = in_fov
-            # 如果范围内没有目标, 不进行瞄准 (返回 None)
             else:
+                self._locked_target_cx = None
+                self._locked_target_cy = None
+                self._locked_ref_cx = None
+                self._locked_ref_cy = None
+                self._lock_frames = 0
                 return None
 
-        # 选择离屏幕中心最近的目标
-        best = min(
-            candidates,
-            key=lambda d: (
-                (d.cx - self._screen_center_x) ** 2 +
-                (d.cy - self._screen_center_y) ** 2
-            )
-        )
+        if not candidates:
+            self._locked_target_cx = None
+            self._locked_target_cy = None
+            self._locked_ref_cx = None
+            self._locked_ref_cy = None
+            self._lock_frames = 0
+            return None
 
-        return best
+        # 目标锁定逻辑: 避免来回切换
+        if self._locked_target_cx is not None and self._lock_frames > 0:
+            # 计算当前帧所有候选的中心 (参考点), 用于补偿视角移动
+            cur_ref_cx = sum(d.cx for d in candidates) / len(candidates)
+            cur_ref_cy = sum(d.cy for d in candidates) / len(candidates)
+
+            # 计算视角偏移量 = 当前参考点 - 锁定时的参考点
+            view_dx = cur_ref_cx - self._locked_ref_cx
+            view_dy = cur_ref_cy - self._locked_ref_cy
+
+            # 预测锁定目标在当前帧的位置 = 锁定位置 + 视角偏移
+            predict_cx = self._locked_target_cx + view_dx
+            predict_cy = self._locked_target_cy + view_dy
+
+            # 找候选列表中离预测位置最近的
+            def dist_to_predicted(d):
+                return (d.cx - predict_cx) ** 2 + (d.cy - predict_cy) ** 2
+            nearest_to_predicted = min(candidates, key=dist_to_predicted)
+            predicted_dist = (predict_cx - self._screen_center_x) ** 2 + \
+                             (predict_cy - self._screen_center_y) ** 2
+
+            # 如果最近目标(到中心)比锁定目标预测位置近很多(50%+)才切换
+            closest = min(candidates, key=lambda d: (d.cx - self._screen_center_x) ** 2 + (d.cy - self._screen_center_y) ** 2)
+            closest_dist = (closest.cx - self._screen_center_x) ** 2 + \
+                           (closest.cy - self._screen_center_y) ** 2
+
+            if closest_dist < predicted_dist * 0.5:
+                # 切换到新目标, 更新参考点
+                self._missed_frames = 0
+                self._locked_target_cx = closest.cx
+                self._locked_target_cy = closest.cy
+                self._locked_ref_cx = cur_ref_cx
+                self._locked_ref_cy = cur_ref_cy
+                self._lock_frames = 60
+                self._smooth_x = None
+                self._smooth_y = None
+                return closest
+            else:
+                # 保持锁定, 更新锁定位置为最近的候选
+                # 更新参考点 (跟踪视角变化)
+                self._missed_frames = 0
+                self._locked_target_cx = nearest_to_predicted.cx
+                self._locked_target_cy = nearest_to_predicted.cy
+                self._locked_ref_cx = cur_ref_cx
+                self._locked_ref_cy = cur_ref_cy
+                self._lock_frames = 60
+                return nearest_to_predicted
+        else:
+            # 首次锁定: 选离屏幕中心最近的, 记录参考点
+            self._missed_frames = 0
+            closest = min(candidates, key=lambda d: (d.cx - self._screen_center_x) ** 2 + (d.cy - self._screen_center_y) ** 2)
+            self._locked_target_cx = closest.cx
+            self._locked_target_cy = closest.cy
+            self._locked_ref_cx = sum(d.cx for d in candidates) / len(candidates)
+            self._locked_ref_cy = sum(d.cy for d in candidates) / len(candidates)
+            self._lock_frames = 60
+            return closest
 
     def _predict_target(self, cx: float, cy: float) -> Tuple[float, float]:
         """
-        目标位置预测
+        目标位置预测 (补偿推理延迟)
 
-        基于历史位置做线性外推, 补偿检测延迟
+        基于历史位置做线性外推, 补偿检测延迟。
+        使用最近 3 帧计算瞬时速度, 比长时间平均更灵敏。
         """
         self._target_history.append((cx, cy))
         if len(self._target_history) > 10:
@@ -280,19 +486,16 @@ class TrajectoryCalculator:
         if len(self._target_history) < 3:
             return cx, cy
 
-        # 计算运动矢量
-        dx_total = self._target_history[-1][0] - self._target_history[0][0]
-        dy_total = self._target_history[-1][1] - self._target_history[0][1]
-        n = len(self._target_history) - 1
+        # 使用最近 3 帧计算瞬时速度 (比全历史平均更跟手)
+        recent = self._target_history[-3:]
+        dx_total = recent[-1][0] - recent[0][0]
+        dy_total = recent[-1][1] - recent[0][1]
 
-        if n == 0:
-            return cx, cy
+        # 每帧平均位移 (2 帧间隔)
+        step_dx = dx_total / 2
+        step_dy = dy_total / 2
 
-        # 每帧平均位移
-        step_dx = dx_total / n
-        step_dy = dy_total / n
-
-        # 外推预测
+        # 外推预测, 补偿推理延迟
         predict_x = cx + step_dx * self.config.prediction_ticks
         predict_y = cy + step_dy * self.config.prediction_ticks
 
@@ -318,6 +521,9 @@ class TrajectoryCalculator:
         step_dx = dx / num_steps
         step_dy = dy / num_steps
 
+        # 目标越近, 抖动越小 (防止近距离抖动)
+        near_factor = min(1.0, distance / 50.0)
+
         steps = []
         for i in range(num_steps):
             # 是否为最后一步 (最后一步不添加抖动, 确保精确)
@@ -327,9 +533,9 @@ class TrajectoryCalculator:
                 sdx = step_dx
                 sdy = step_dy
             else:
-                # 添加随机抖动 (反检测)
-                jx = random.uniform(-jitter, jitter)
-                jy = random.uniform(-jitter, jitter)
+                # 添加随机抖动 (反检测), 近距离时抖动衰减
+                jx = random.uniform(-jitter, jitter) * near_factor
+                jy = random.uniform(-jitter, jitter) * near_factor
                 sdx = step_dx + jx
                 sdy = step_dy + jy
 

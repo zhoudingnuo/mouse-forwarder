@@ -31,6 +31,8 @@ volatile uint8_t  Rx_Packet_Ready = 0;
 #define FLAG_RIGHT   0x02
 #define FLAG_MIDDLE  0x04
 #define FLAG_WHEEL   0x08
+#define FLAG_BACK    0x10  /* X1 button */
+#define FLAG_FORWARD 0x20  /* X2 button */
 
 void Mouse_Packet_Parse(uint8_t data)
 {
@@ -61,18 +63,17 @@ void Mouse_Send_HID_Report(void)
     if(!USBHS_DevEnumStatus)
         return;
 
-    /* 如果有新数据, 更新鼠标报告 */
+    /* 有新数据才发送, 无数据时端点 NAK, 主机保持最后状态 */
     if(Rx_Packet_Ready)
     {
         uint8_t flags = Rx_Packet[1];
-        Mouse_Report[0] = flags & 0x07;
+        Mouse_Report[0] = flags & 0x3F;  // 6 buttons: left|right|middle|back|forward
         Mouse_Report[1] = Rx_Packet[2];
         Mouse_Report[2] = Rx_Packet[3];
         Mouse_Report[3] = (flags & FLAG_WHEEL) ? Rx_Packet[4] : 0;
         Rx_Packet_Ready = 0;
+        USBHS_Endp_DataUp(DEF_UEP2, Mouse_Report, 4, DEF_UEP_CPY_LOAD);
     }
-    /* 不管有没有新数据, 都用最后的状态发送 HID 报告 */
-    USBHS_Endp_DataUp(DEF_UEP2, Mouse_Report, 4, DEF_UEP_CPY_LOAD);
 }
 
 int main(void)

@@ -144,6 +144,86 @@
             });
         }
 
+        // PID: Kp
+        const sliderKp = document.getElementById('slider-kp');
+        const lblKp = document.getElementById('lbl-kp');
+        if (sliderKp) {
+            sliderKp.addEventListener('input', () => {
+                if (lblKp) lblKp.textContent = parseFloat(sliderKp.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
+        // PID: Ki
+        const sliderKi = document.getElementById('slider-ki');
+        const lblKi = document.getElementById('lbl-ki');
+        if (sliderKi) {
+            sliderKi.addEventListener('input', () => {
+                if (lblKi) lblKi.textContent = parseFloat(sliderKi.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
+        // PID: Kd
+        const sliderKd = document.getElementById('slider-kd');
+        const lblKd = document.getElementById('lbl-kd');
+        if (sliderKd) {
+            sliderKd.addEventListener('input', () => {
+                if (lblKd) lblKd.textContent = parseFloat(sliderKd.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 积分限幅
+        const sliderIntegral = document.getElementById('slider-integral-limit');
+        const lblIntegral = document.getElementById('lbl-integral-limit');
+        if (sliderIntegral) {
+            sliderIntegral.addEventListener('input', () => {
+                if (lblIntegral) lblIntegral.textContent = sliderIntegral.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 每帧最大步数
+        const sliderMaxSteps = document.getElementById('slider-maxsteps');
+        const lblMaxSteps = document.getElementById('lbl-maxsteps');
+        if (sliderMaxSteps) {
+            sliderMaxSteps.addEventListener('input', () => {
+                if (lblMaxSteps) lblMaxSteps.textContent = sliderMaxSteps.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 死区
+        const sliderDeadzone = document.getElementById('slider-deadzone');
+        const lblDeadzone = document.getElementById('lbl-deadzone');
+        if (sliderDeadzone) {
+            sliderDeadzone.addEventListener('input', () => {
+                if (lblDeadzone) lblDeadzone.textContent = sliderDeadzone.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 滞回
+        const sliderHysteresis = document.getElementById('slider-hysteresis');
+        const lblHysteresis = document.getElementById('lbl-hysteresis');
+        if (sliderHysteresis) {
+            sliderHysteresis.addEventListener('input', () => {
+                if (lblHysteresis) lblHysteresis.textContent = sliderHysteresis.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // Y轴幅度
+        const sliderYscale = document.getElementById('slider-yscale');
+        const lblYscale = document.getElementById('lbl-yscale');
+        if (sliderYscale) {
+            sliderYscale.addEventListener('input', () => {
+                if (lblYscale) lblYscale.textContent = parseFloat(sliderYscale.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
         // 偏移量
         const offsetX = document.getElementById('offset-x');
         const offsetY = document.getElementById('offset-y');
@@ -182,16 +262,17 @@
     }
 
     function sendTrajectoryConfig() {
-        const smooth = parseFloat(document.getElementById('slider-smooth')?.value) || 0.35;
-        const maxStep = parseInt(document.getElementById('slider-maxstep')?.value) || 10;
-        const confidence = parseFloat(document.getElementById('slider-confidence')?.value) || 0.30;
-        const offsetX = parseInt(document.getElementById('offset-x')?.value) || 0;
-        const offsetY = parseInt(document.getElementById('offset-y')?.value) || 0;
-        const jitter = parseFloat(document.getElementById('slider-jitter')?.value) || 0.15;
-        const fov = parseInt(document.getElementById('slider-fov')?.value) || 300;
-        const priority = parseInt(document.getElementById('target-priority-select')?.value) || -1;
-        const prediction = parseInt(document.getElementById('slider-prediction')?.value) || 3;
-        const triggerThreshold = parseInt(document.getElementById('slider-trigger-threshold')?.value) || 5;
+        const el = (id) => document.getElementById(id);
+        const smooth = parseFloat(el('slider-smooth')?.value) ?? 0.35;
+        const maxStep = parseInt(el('slider-maxstep')?.value) ?? 10;
+        const confidence = parseFloat(el('slider-confidence')?.value) ?? 0.30;
+        const offsetX = parseInt(el('offset-x')?.value) ?? 0;
+        const offsetY = parseInt(el('offset-y')?.value) ?? 0;
+        const jitter = parseFloat(el('slider-jitter')?.value) ?? 0.15;
+        const fov = parseInt(el('slider-fov')?.value) ?? 300;
+        const priority = parseInt(el('target-priority-select')?.value) ?? -1;
+        const prediction = parseInt(el('slider-prediction')?.value) ?? 3;
+        const triggerThreshold = parseInt(el('slider-trigger-threshold')?.value) ?? 5;
 
         ws.send({
             type: 'trajectory_config',
@@ -206,6 +287,14 @@
             fov_radius: fov,
             trigger_enabled: state.triggerEnabled,
             trigger_threshold: triggerThreshold,
+            kp: parseFloat(el('slider-kp')?.value) ?? 0.35,
+            ki: parseFloat(el('slider-ki')?.value) ?? 0.02,
+            kd: parseFloat(el('slider-kd')?.value) ?? 0.10,
+            integral_limit: parseFloat(el('slider-integral-limit')?.value) ?? 100,
+            max_steps_per_frame: parseInt(el('slider-maxsteps')?.value) ?? 30,
+            settle_deadzone: parseFloat(el('slider-deadzone')?.value) ?? 8,
+            unsettle_hysteresis: parseFloat(el('slider-hysteresis')?.value) ?? 20,
+            y_scale: parseFloat(el('slider-yscale')?.value) ?? 0.20,
         });
     }
 
@@ -339,6 +428,22 @@
                 } else {
                     settings.addLog('采集卡已停止', 'info');
                 }
+            }
+        });
+
+        // 截图按钮
+        const btnSnapshot = document.getElementById('btn-snapshot');
+        if (btnSnapshot) {
+            btnSnapshot.addEventListener('click', () => {
+                ws.send({ type: 'save_snapshot' });
+                settings.addLog('正在截图...', 'info');
+            });
+        }
+        ws.on('snapshot_saved', (data) => {
+            if (data.error) {
+                settings.addLog(`截图失败: ${data.error}`, 'err');
+            } else {
+                settings.addLog(`截图已保存: ${data.filename}`, 'ok');
             }
         });
 
@@ -531,6 +636,128 @@ function onState(data) {
         if (data.lock_mode !== undefined) {
             state.lockMode = data.lock_mode;
             updateLockUI(data.lock_mode);
+        }
+        // 同步滑块与后端配置
+        if (data.config) {
+            syncSliders(data.config);
+        }
+    }
+
+    function syncSliders(config) {
+        // 置信度
+        const sliderConf = document.getElementById('slider-confidence');
+        const lblConf = document.getElementById('lbl-confidence');
+        if (sliderConf && config.min_confidence !== undefined) {
+            sliderConf.value = config.min_confidence;
+            if (lblConf) lblConf.textContent = config.min_confidence.toFixed(2);
+        }
+        // 平滑度
+        const sliderSmooth = document.getElementById('slider-smooth');
+        const lblSmooth = document.getElementById('lbl-smooth');
+        if (sliderSmooth && config.smooth_factor !== undefined) {
+            sliderSmooth.value = config.smooth_factor;
+            if (lblSmooth) lblSmooth.textContent = config.smooth_factor.toFixed(2);
+        }
+        // 最大步长
+        const sliderMax = document.getElementById('slider-maxstep');
+        const lblMax = document.getElementById('lbl-maxstep');
+        if (sliderMax && config.max_step_px !== undefined) {
+            sliderMax.value = config.max_step_px;
+            if (lblMax) lblMax.textContent = config.max_step_px;
+        }
+        // FOV
+        const sliderFov = document.getElementById('slider-fov');
+        const lblFov = document.getElementById('lbl-fov');
+        if (sliderFov && config.fov_radius !== undefined) {
+            sliderFov.value = config.fov_radius;
+            if (lblFov) lblFov.textContent = config.fov_radius;
+        }
+        // 偏移
+        const offsetX = document.getElementById('offset-x');
+        const offsetY = document.getElementById('offset-y');
+        if (offsetX && config.target_offset_x !== undefined) offsetX.value = config.target_offset_x;
+        if (offsetY && config.target_offset_y !== undefined) offsetY.value = config.target_offset_y;
+        // 抖动
+        const sliderJitter = document.getElementById('slider-jitter');
+        const lblJitter = document.getElementById('lbl-jitter');
+        if (sliderJitter && config.jitter_amount !== undefined) {
+            sliderJitter.value = config.jitter_amount;
+            if (lblJitter) lblJitter.textContent = config.jitter_amount.toFixed(2);
+        }
+        // 预测帧数
+        const sliderPred = document.getElementById('slider-prediction');
+        const lblPred = document.getElementById('lbl-prediction');
+        if (sliderPred && config.prediction_ticks !== undefined) {
+            sliderPred.value = config.prediction_ticks;
+            if (lblPred) lblPred.textContent = config.prediction_ticks;
+        }
+        // 目标优先级
+        const prioritySel = document.getElementById('target-priority-select');
+        if (prioritySel && config.target_priority !== undefined) {
+            prioritySel.value = config.target_priority;
+        }
+        // 扳机阈值
+        const sliderTrigger = document.getElementById('slider-trigger-threshold');
+        const lblTrigger = document.getElementById('lbl-trigger-threshold');
+        if (sliderTrigger && config.trigger_threshold !== undefined) {
+            sliderTrigger.value = config.trigger_threshold;
+            if (lblTrigger) lblTrigger.textContent = config.trigger_threshold;
+        }
+        // PID: Kp
+        const sliderKp = document.getElementById('slider-kp');
+        const lblKp = document.getElementById('lbl-kp');
+        if (sliderKp && config.kp !== undefined) {
+            sliderKp.value = config.kp;
+            if (lblKp) lblKp.textContent = config.kp.toFixed(2);
+        }
+        // PID: Ki
+        const sliderKi = document.getElementById('slider-ki');
+        const lblKi = document.getElementById('lbl-ki');
+        if (sliderKi && config.ki !== undefined) {
+            sliderKi.value = config.ki;
+            if (lblKi) lblKi.textContent = config.ki.toFixed(2);
+        }
+        // PID: Kd
+        const sliderKd = document.getElementById('slider-kd');
+        const lblKd = document.getElementById('lbl-kd');
+        if (sliderKd && config.kd !== undefined) {
+            sliderKd.value = config.kd;
+            if (lblKd) lblKd.textContent = config.kd.toFixed(2);
+        }
+        // 积分限幅
+        const sliderIntegral = document.getElementById('slider-integral-limit');
+        const lblIntegral = document.getElementById('lbl-integral-limit');
+        if (sliderIntegral && config.integral_limit !== undefined) {
+            sliderIntegral.value = config.integral_limit;
+            if (lblIntegral) lblIntegral.textContent = config.integral_limit;
+        }
+        // 每帧最大步数
+        const sliderMaxSteps = document.getElementById('slider-maxsteps');
+        const lblMaxSteps = document.getElementById('lbl-maxsteps');
+        if (sliderMaxSteps && config.max_steps_per_frame !== undefined) {
+            sliderMaxSteps.value = config.max_steps_per_frame;
+            if (lblMaxSteps) lblMaxSteps.textContent = config.max_steps_per_frame;
+        }
+        // 死区
+        const sliderDeadzone = document.getElementById('slider-deadzone');
+        const lblDeadzone = document.getElementById('lbl-deadzone');
+        if (sliderDeadzone && config.settle_deadzone !== undefined) {
+            sliderDeadzone.value = config.settle_deadzone;
+            if (lblDeadzone) lblDeadzone.textContent = config.settle_deadzone;
+        }
+        // 滞回
+        const sliderHysteresis = document.getElementById('slider-hysteresis');
+        const lblHysteresis = document.getElementById('lbl-hysteresis');
+        if (sliderHysteresis && config.unsettle_hysteresis !== undefined) {
+            sliderHysteresis.value = config.unsettle_hysteresis;
+            if (lblHysteresis) lblHysteresis.textContent = config.unsettle_hysteresis;
+        }
+        // Y轴幅度
+        const sliderYscale = document.getElementById('slider-yscale');
+        const lblYscale = document.getElementById('lbl-yscale');
+        if (sliderYscale && config.y_scale !== undefined) {
+            sliderYscale.value = config.y_scale;
+            if (lblYscale) lblYscale.textContent = config.y_scale.toFixed(2);
         }
     }
 

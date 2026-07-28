@@ -1,19 +1,13 @@
 """
-object_detector.py - ONNX 目标检测模块
+object_detector.py - 目标检测模块
 
-加载 Valorant 目标检测 ONNX 模型, 对采集卡帧进行推理,
-输出检测到的目标边界框。
-
-模型信息:
-- 输入: [1, 3, 256, 256] (RGB, normalized)
-- 输出: [1, 9, 1344] (检测结果)
-- 每个候选框 9 个值: [cx, cy, w, h, conf, cls1, cls2, cls3, cls4]
-- 共 1344 个候选框
-
-注意: 此模块提供框架, 具体后处理逻辑需要根据模型输出格式调整。
+支持双格式:
+- .onnx: ONNX Runtime 推理 (自定义模型)
+- .pt:   Ultralytics YOLOv8 推理 (keremberke/yolov8n-valorant-detection)
 """
 
 import logging
+import os
 import time
 from typing import List, Optional
 
@@ -26,28 +20,28 @@ logger = logging.getLogger(__name__)
 
 class ObjectDetector:
     """
-    ONNX 目标检测器
+    目标检测器
 
-    加载并运行 Valorant 目标检测模型,
-    输出检测到的目标列表。
+    自动识别模型格式:
+    - *.onnx → ONNX Runtime
+    - *.pt   → Ultralytics YOLOv8
     """
 
-    # 模型输入参数
-    INPUT_NAME = "images"
-    OUTPUT_NAME = "output0"
-    INPUT_SIZE = 256  # 模型输入尺寸 256x256
-    INPUT_SHAPE = (1, 3, INPUT_SIZE, INPUT_SIZE)
-
-    # 后处理参数
     CONFIDENCE_THRESHOLD = 0.30
     NMS_IOU_THRESHOLD = 0.45
     MAX_DETECTIONS = 50
 
+    # ONNX 模型参数
+    INPUT_NAME = "images"
+    OUTPUT_NAME = "output0"
+    INPUT_SIZE = 256
+
     def __init__(self):
         self._session = None
         self._model_path = None
-        self._input_shape = None
         self._loaded = False
+        self._model_type = None  # 'onnx' or 'pt'
+        self._yolo_model = None  # ultralytics YOLO 实例
         self._inference_time = 0.0
         self._inference_count = 0
 
@@ -67,41 +61,56 @@ class ObjectDetector:
 
     def load_model(self, model_path: str):
         """
-        加载 ONNX 模型
+        加载模型 (自动识别格式)
 
         Args:
-            model_path: ONNX 模型文件路径
+            model_path: .onnx 或 .pt 文件路径
         """
-        import onnxruntime
+        ext = os.path.splitext(model_path)[1].lower()
+        logger.info(f"Loading model: {model_path} (format: {ext})")
 
-        logger.info(f"Loading ONNX model: {model_path}")
-
-        # 优先使用 DirectML / CUDA 提供程序
-        available_providers = onnxruntime.get_available_providers()
-        preferred_providers = ['DmlExecutionProvider', 'CUDAExecutionProvider',
-                               'CPUExecutionProvider']
-
-        providers = [p for p in preferred_providers if p in available_providers]
-
-        logger.info(f"Available providers: {available_providers}")
-        logger.info(f"Using providers: {providers}")
-
-        self._session = onnxruntime.InferenceSession(
-            model_path,
-            providers=providers,
-        )
+        if ext == '.pt':
+            self._load_pt(model_path)
+        elif ext == '.onnx':
+            self._load_onnx(model_path)
+        else:
+            raise ValueError(f"Unsupported model format: {ext} (supported: .onnx, .pt)")
 
         self._model_path = model_path
-        self._input_shape = self.INPUT_SHAPE
         self._loaded = True
+        logger.info(f"Model loaded ({self._model_type})")
 
-        # 打印模型信息
+    def _load_onnx(self, model_path: str):
+        """加载 ONNX 模型"""
+        import onnxruntime
+
+        available = onnxruntime.get_available_providers()
+        preferred = ['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+        providers = [p for p in preferred if p in available]
+
+        self._session = onnxruntime.InferenceSession(model_path, providers=providers)
+        self._model_type = 'onnx'
+
         for inp in self._session.get_inputs():
             logger.info(f"  Input: {inp.name} -> {inp.shape}")
         for out in self._session.get_outputs():
             logger.info(f"  Output: {out.name} -> {out.shape}")
 
-        logger.info("Model loaded successfully")
+    def _load_pt(self, model_path: str):
+        """加载 YOLOv8 PyTorch 模型"""
+        from ultralytics import YOLO
+
+        self._yolo_model = YOLO(model_path)
+
+        # 如果设备支持, 用 GPU
+        import torch
+        if torch.cuda.is_available():
+            self._yolo_model.to('cuda')
+            logger.info("YOLO model loaded on CUDA")
+        else:
+            logger.info("YOLO model loaded on CPU")
+
+        self._model_type = 'pt'
 
     def detect(self, frame: np.ndarray, original_shape: Optional[tuple] = None) -> List[Detection]:
         """
@@ -114,104 +123,64 @@ class ObjectDetector:
         Returns:
             检测结果列表
         """
-        if not self._loaded or self._session is None:
-            logger.warning("Model not loaded")
+        if not self._loaded:
             return []
 
-        orig_h, orig_w = original_shape or frame.shape[:2]
         t_start = time.perf_counter()
 
-        # 1. 预处理
-        input_tensor = self._preprocess(frame)
+        if self._model_type == 'onnx':
+            detections = self._detect_onnx(frame, original_shape)
+        elif self._model_type == 'pt':
+            detections = self._detect_pt(frame, original_shape)
+        else:
+            return []
 
-        # 2. 推理
-        outputs = self._session.run(
-            [self.OUTPUT_NAME],
-            {self.INPUT_NAME: input_tensor},
-        )
-
-        t_infer = time.perf_counter()
-        self._inference_time += (t_infer - t_start)
+        self._inference_time += time.perf_counter() - t_start
         self._inference_count += 1
-
-        # 3. 后处理
-        detections = self._postprocess(
-            outputs[0],  # [1, 9, 1344]
-            orig_w, orig_h,
-        )
-
-        logger.debug(f"Inference: {len(detections)} detections in "
-                      f"{(t_infer - t_start) * 1000:.1f}ms")
 
         return detections
 
-    # ============ 预处理 ============
+    # ================================================================
+    # ONNX 推理
+    # ================================================================
 
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """
-        预处理帧用于模型推理
-
-        BGR → RGB → Resize 到 256x256 → Normalize → CHW → Batch
-        """
+    def _detect_onnx(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
+        """ONNX 模型推理 (自动适配 8/9 通道输出)"""
         import cv2
 
-        # BGR → RGB
+        orig_h, orig_w = original_shape or frame.shape[:2]
+
+        # 预处理
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Resize 到 256x256
-        resized = cv2.resize(rgb, (self.INPUT_SIZE, self.INPUT_SIZE),
-                             interpolation=cv2.INTER_LINEAR)
-
-        # Normalize 到 [0, 1]
+        resized = cv2.resize(rgb, (self.INPUT_SIZE, self.INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
         normalized = resized.astype(np.float32) / 255.0
-
-        # HWC → CHW
         chw = np.transpose(normalized, (2, 0, 1))
+        input_tensor = np.expand_dims(chw, axis=0).astype(np.float32)
 
-        # 添加 batch 维度
-        batch = np.expand_dims(chw, axis=0).astype(np.float32)
+        # 推理
+        outputs = self._session.run([self.OUTPUT_NAME], {self.INPUT_NAME: input_tensor})
+        output = np.squeeze(outputs[0], axis=0)  # [N, 1344]  N=8 或 9
 
-        return batch
+        num_channels = output.shape[0]
+        cx = output[0, :]
+        cy = output[1, :]
+        w = output[2, :]
+        h = output[3, :]
 
-    # ============ 后处理 ============
+        # 自动适配输出格式:
+        # 9 通道: [cx, cy, w, h, objectness, cls1, cls2, cls3, cls4]
+        # 8 通道: [cx, cy, w, h, cls1, cls2, cls3, cls4]  (标准 YOLOv8)
+        if num_channels == 9:
+            conf = 1.0 / (1.0 + np.exp(-output[4, :]))
+            cls_scores = output[5:9, :]
+        else:
+            conf = 1.0  # 无 objectness, 直接用类别分
+            cls_scores = output[4:8, :]
 
-    def _postprocess(self, output: np.ndarray, orig_w: int, orig_h: int) -> List[Detection]:
-        """
-        解析模型输出
-
-        output shape: [1, 9, 1344]
-        每个候选框 9 个值: [cx, cy, w, h, conf, cls1, cls2, cls3, cls4]
-
-        Args:
-            output: 模型输出张量
-            orig_w: 原始帧宽度
-            orig_h: 原始帧高度
-
-        Returns:
-            检测结果列表
-        """
-        # 移除 batch 维度 → [9, 1344]
-        scores = np.squeeze(output, axis=0)
-
-        # 解析: [cx, cy, w, h, conf, cls1, cls2, cls3, cls4]
-        cx = scores[0, :]     # 中心 X (归一化到 0-1 或网格坐标)
-        cy = scores[1, :]     # 中心 Y
-        w = scores[2, :]      # 宽度
-        h = scores[3, :]      # 高度
-        conf = scores[4, :]   # 目标置信度
-        cls_scores = scores[5:9, :]  # 4 个类别得分
-
-        # 应用 sigmoid 到置信度
-        conf = 1.0 / (1.0 + np.exp(-conf))
-
-        # 获取每个候选框的类别
         cls_ids = np.argmax(cls_scores, axis=0)
         cls_conf = 1.0 / (1.0 + np.exp(-np.max(cls_scores, axis=0)))
-
-        # 最终置信度 = 目标置信度 * 类别置信度
         final_conf = conf * cls_conf
 
-        # 置信度过滤
         mask = final_conf >= self.CONFIDENCE_THRESHOLD
         if not np.any(mask):
             return []
@@ -223,82 +192,95 @@ class ObjectDetector:
         final_conf = final_conf[mask]
         cls_ids = cls_ids[mask]
 
-        # 将坐标从 256x256 映射回原始帧尺寸
+        # 映射回原始帧尺寸
         scale_x = orig_w / self.INPUT_SIZE
         scale_y = orig_h / self.INPUT_SIZE
 
-        cx_abs = cx * scale_x
-        cy_abs = cy * scale_y
-        w_abs = w * scale_x
-        h_abs = h * scale_y
-
-        # 计算边界框左上角
-        x_abs = cx_abs - w_abs / 2
-        y_abs = cy_abs - h_abs / 2
-
-        # 构建检测列表
         detections = []
-        for i in range(len(cx_abs)):
+        for i in range(len(cx)):
+            x = (cx[i] - w[i] / 2) * scale_x
+            y = (cy[i] - h[i] / 2) * scale_y
+            bw = w[i] * scale_x
+            bh = h[i] * scale_y
             detections.append(Detection.from_bbox(
-                x=float(x_abs[i]),
-                y=float(y_abs[i]),
-                w=float(w_abs[i]),
-                h=float(h_abs[i]),
+                x=float(x), y=float(y), w=float(bw), h=float(bh),
                 confidence=float(final_conf[i]),
                 class_id=int(cls_ids[i]),
             ))
 
-        # NMS 过滤重叠框
         detections = self._nms(detections)
-
-        # 按置信度排序
         detections.sort(key=lambda d: d.confidence, reverse=True)
-
         return detections[:self.MAX_DETECTIONS]
 
-    def _nms(self, detections: List[Detection]) -> List[Detection]:
-        """
-        非极大值抑制 (Non-Maximum Suppression)
+    # ================================================================
+    # YOLOv8 (PyTorch) 推理
+    # ================================================================
 
-        去除重叠度高的检测框
-        """
+    def _detect_pt(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
+        """YOLOv8 PyTorch 模型推理"""
+        orig_h, orig_w = original_shape or frame.shape[:2]
+
+        # YOLO 推理 (返回 Results 对象列表)
+        results = self._yolo_model(frame, verbose=False)
+
+        if not results or len(results) == 0:
+            return []
+
+        result = results[0]
+        if result.boxes is None or len(result.boxes) == 0:
+            return []
+
+        detections = []
+        boxes = result.boxes.xyxy.cpu().numpy()   # [N, 4]  xyxy 格式
+        confs = result.boxes.conf.cpu().numpy()    # [N]
+        cls_ids = result.boxes.cls.cpu().numpy().astype(int)  # [N]
+
+        for i in range(len(boxes)):
+            if confs[i] < self.CONFIDENCE_THRESHOLD:
+                continue
+
+            x1, y1, x2, y2 = boxes[i]
+            w = x2 - x1
+            h = y2 - y1
+
+            detections.append(Detection.from_bbox(
+                x=float(x1), y=float(y1), w=float(w), h=float(h),
+                confidence=float(confs[i]),
+                class_id=int(cls_ids[i]),
+            ))
+
+        # YOLO 自带 NMS, 但再加一道保险
+        detections = self._nms(detections)
+        detections.sort(key=lambda d: d.confidence, reverse=True)
+        return detections[:self.MAX_DETECTIONS]
+
+    # ================================================================
+    # 通用后处理
+    # ================================================================
+
+    def _nms(self, detections: List[Detection]) -> List[Detection]:
+        """非极大值抑制"""
         if not detections:
             return []
 
-        # 按置信度降序排序
         sorted_dets = sorted(detections, key=lambda d: d.confidence, reverse=True)
         keep = []
 
         while sorted_dets:
             best = sorted_dets.pop(0)
             keep.append(best)
-
-            # 过滤与 best 重叠过高的框
-            sorted_dets = [
-                d for d in sorted_dets
-                if self._iou(best, d) < self.NMS_IOU_THRESHOLD
-            ]
+            sorted_dets = [d for d in sorted_dets if self._iou(best, d) < self.NMS_IOU_THRESHOLD]
 
         return keep
 
     def _iou(self, a: Detection, b: Detection) -> float:
         """计算两个检测框的 IoU"""
-        # 交集
         x1 = max(a.x, b.x)
         y1 = max(a.y, b.y)
         x2 = min(a.x + a.w, b.x + b.w)
         y2 = min(a.y + a.h, b.y + b.h)
-
-        inter_w = max(0, x2 - x1)
-        inter_h = max(0, y2 - y1)
-        inter = inter_w * inter_h
-
-        # 并集
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
         area_a = a.w * a.h
         area_b = b.w * b.h
         union = area_a + area_b - inter
-
-        if union == 0:
-            return 0.0
-
-        return inter / union
+        return inter / union if union > 0 else 0.0

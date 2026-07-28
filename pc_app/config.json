@@ -1,0 +1,36 @@
+{
+  "trajectory": {
+    "smooth_factor": 0.35,
+    "max_step_px": 10,
+    "min_confidence": 0.55,
+    "target_offset_x": 0,
+    "target_offset_y": 0,
+    "jitter_amount": 0.0,
+    "target_priority": -1,
+    "prediction_ticks": 3,
+    "fov_radius": 300,
+    "trigger_enabled": false,
+    "trigger_threshold": 5,
+    "invert_ai_x": false,
+    "invert_ai_y": false,
+    "kp": 0.15,
+    "ki": 0.01,
+    "kd": 0.14,
+    "integral_limit": 100.0,
+    "max_steps_per_frame": 15,
+    "settle_deadzone": 11.0,
+    "unsettle_hysteresis": 20.0,
+    "y_scale": 0.2,
+    "enabled": true
+  },
+  "video": {
+    "show_video": true
+  },
+  "screen": {
+    "target_w": 2560,
+    "target_h": 1440
+  },
+  "model": {
+    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\best.pt"
+  }
+}

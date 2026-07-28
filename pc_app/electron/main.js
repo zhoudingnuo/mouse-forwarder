@@ -21,7 +21,7 @@ function startBackend() {
         const backendScript = path.join(backendDir, 'main.py');
 
         const pythonCandidates = ['python', 'python3'];
-        
+
         function tryStart(index) {
             if (index >= pythonCandidates.length) {
                 reject(new Error('找不到 Python, 请确认已安装并添加到 PATH'));
@@ -39,13 +39,10 @@ function startBackend() {
             });
 
             let started = false;
-            let output = '';
 
             proc.stdout.on('data', (data) => {
                 const text = data.toString();
-                output += text;
                 console.log(`[backend] ${text.trim()}`);
-                // 从 READY 消息提取实际端口
                 if (!started) {
                     const match = text.match(/READY ws:\/\/127\.0\.0\.1:(\d+)/);
                     if (match) {
@@ -59,27 +56,31 @@ function startBackend() {
 
             proc.stderr.on('data', (data) => {
                 const text = data.toString();
-                // 忽略 pip 警告
                 if (!text.includes('DEPRECATION') && !text.includes('WARNING')) {
-                    console.log(`[backend-err] ${text}`);
+                    if (!text.includes('INFO') && !text.includes('WARNING')) {
+                        console.log(`[backend-err] ${text}`);
+                    }
                 }
             });
 
+            // 进程启动失败 (exe 不存在等)
             proc.on('error', () => {
                 if (!started) tryStart(index + 1);
             });
 
+            // 进程退出 (被超时杀死或自行退出)
             proc.on('exit', (code) => {
                 console.log(`Backend exited: ${code}`);
                 if (!started) tryStart(index + 1);
             });
 
+            // 超时: 模型加载可能较慢, 给够时间
             setTimeout(() => {
                 if (!started) {
                     proc.kill();
-                    tryStart(index + 1);
+                    // exit 事件会触发 tryStart, 无需重复调用
                 }
-            }, 8000);
+            }, 20000);  // 20 秒超时 (YOLO 模型加载 + CUDA 初始化)
         }
 
         tryStart(0);

@@ -6,7 +6,8 @@ serial_forwarder.py - 串口转发模块
 
 import asyncio
 import logging
-from typing import Optional
+import threading
+from typing import Callable, Optional
 
 import serial
 import serial.tools.list_ports
@@ -32,6 +33,7 @@ class SerialForwarder:
         self._serial: Optional[serial.Serial] = None
         self._connected: bool = False
         self._lock = asyncio.Lock()
+        self._write_lock = threading.Lock()  # 线程安全的写锁
         
         # 统计信息
         self.bytes_sent: int = 0
@@ -39,7 +41,8 @@ class SerialForwarder:
         
         # 状态回调
         self._on_connection_change = None
-    
+        
+            
     @property
     def is_connected(self) -> bool:
         return self._connected
@@ -120,7 +123,7 @@ class SerialForwarder:
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
                     timeout=0.1,
-                    write_timeout=0.01,
+                    write_timeout=0,
                 )
                 self._connected = self._serial.is_open
                 logger.info(f"Connected to {self._port} at {self._baudrate} baud")
@@ -159,18 +162,19 @@ class SerialForwarder:
     async def send(self, data: bytes) -> bool:
         """
         发送数据到串口
-        
+
         Args:
             data: 要发送的数据
-        
+
         Returns:
             是否发送成功
         """
         if not self._connected or not self._serial:
             logger.warning("Not connected, cannot send")
             return False
-        
-        async with self._lock:
+
+        # 使用线程锁 (与 write_sync 共享同一锁, 避免数据竞争)
+        with self._write_lock:
             try:
                 written = self._serial.write(data)
                 self.bytes_sent += written
@@ -182,4 +186,23 @@ class SerialForwarder:
             except serial.SerialException as e:
                 logger.error(f"Serial write error: {e}")
                 await self._disconnect()
+                return False
+
+    def write_sync(self, data: bytes) -> bool:
+        """
+        同步发送数据到串口 (线程安全)
+
+        用于 _mouse_forward_loop 等非 async 线程。
+        使用 threading.Lock 避免与 trajectory 的 async send 冲突。
+        """
+        if not self._connected or not self._serial:
+            return False
+
+        with self._write_lock:
+            try:
+                written = self._serial.write(data)
+                self.bytes_sent += written
+                self.packets_sent += 1
+                return True
+            except Exception:
                 return False

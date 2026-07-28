@@ -180,6 +180,9 @@
                 <div class="form-group">
                     <button class="btn primary" id="btn-toggle-video">📹 显示画面: 开</button>
                 </div>
+                <div class="form-group">
+                    <button class="btn" id="btn-snapshot">📷 截图保存</button>
+                </div>
             </div>
 
             <div class="sidebar-section trajectory-section">
@@ -230,6 +233,47 @@
                 <div class="form-group">
                     <label>预测帧数 <span id="lbl-prediction">3</span></label>
                     <input type="range" id="slider-prediction" min="0" max="10" step="1" value="3">
+                </div>
+            </div>
+
+            <!-- PID 控制器 -->
+            <div class="sidebar-section">
+                <h3>PID 控制器</h3>
+                <div class="hint-text">Kp 比例 - Ki 积分(补偿灵敏度) - Kd 微分(抑制过冲)</div>
+                <div class="form-group">
+                    <label>Kp <span id="lbl-kp">0.35</span></label>
+                    <input type="range" id="slider-kp" min="0.05" max="0.80" step="0.05" value="0.35">
+                </div>
+                <div class="form-group">
+                    <label>Ki <span id="lbl-ki">0.02</span></label>
+                    <input type="range" id="slider-ki" min="0" max="0.20" step="0.01" value="0.02">
+                </div>
+                <div class="form-group">
+                    <label>Kd <span id="lbl-kd">0.10</span></label>
+                    <input type="range" id="slider-kd" min="0" max="0.50" step="0.01" value="0.10">
+                </div>
+                <div class="form-group">
+                    <label>积分限幅 <span id="lbl-integral-limit">100</span></label>
+                    <input type="range" id="slider-integral-limit" min="10" max="300" step="10" value="100">
+                </div>
+                <div class="form-group">
+                    <label>每帧最大步数 <span id="lbl-maxsteps">30</span></label>
+                    <input type="range" id="slider-maxsteps" min="5" max="80" step="5" value="30">
+                </div>
+                <div class="form-group">
+                    <label>死区 <span id="lbl-deadzone">8</span>px</label>
+                    <input type="range" id="slider-deadzone" min="2" max="30" step="1" value="8">
+                    <div class="hint-text">目标在此范围内停止移动</div>
+                </div>
+                <div class="form-group">
+                    <label>滞回 <span id="lbl-hysteresis">20</span>px</label>
+                    <input type="range" id="slider-hysteresis" min="5" max="60" step="1" value="20">
+                    <div class="hint-text">超出此范围才重新开始瞄准 (防抖)</div>
+                </div>
+                <div class="form-group">
+                    <label>Y轴幅度 <span id="lbl-yscale">0.20</span></label>
+                    <input type="range" id="slider-yscale" min="0.05" max="1.00" step="0.05" value="0.20">
+                    <div class="hint-text">Y轴移动幅度比例 (0.2=防抖, 1.0=全幅)</div>
                 </div>
             </div>
 
@@ -330,17 +374,46 @@
                             <span class="cs-value" id="capture-inference">0ms</span>
                         </span>
                         <span class="cs-item">
+                            <span class="cs-label">管线帧率</span>
+                            <span class="cs-value" id="capture-pipeline-fps">0</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">推理帧率</span>
+                            <span class="cs-value" id="capture-inf-fps">0</span>
+                        </span>
+                        <span class="cs-item">
                             <span class="cs-label">分辨率</span>
                             <span class="cs-value" id="capture-resolution">-</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">目标偏移</span>
+                            <span class="cs-value" id="capture-target-offset">-</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">AI步数</span>
+                            <span class="cs-value" id="capture-ai-steps">-</span>
+                        </span>
+                        <span class="cs-item">
+                            <span class="cs-label">对准</span>
+                            <span class="cs-value" id="capture-settled">-</span>
                         </span>
                     </div>
                 </div>
             </div>
 
+            <!-- 瞄准日志 -->
+            <div id="aim-log-panel">
+                <div class="log-header">
+                    <span>🎯 瞄准日志</span>
+                    <button class="btn btn-sm" id="btn-clear-aim-log">清空</button>
+                </div>
+                <div class="log-entries aim-log-entries" id="aim-log-entries"></div>
+            </div>
+
             <!-- 日志面板 -->
             <div id="log-panel">
                 <div class="log-header">
-                    <span>日志</span>
+                    <span>📋 系统日志</span>
                     <button class="btn btn-sm" id="btn-clear-log">清空</button>
                 </div>
                 <div class="log-entries" id="log-entries"></div>

@@ -62,7 +62,7 @@ volatile uint8_t  USBHS_Endp_Busy[ DEF_UEP_NUM ];
 
 /******************************************************************************/
 /* Interrupt Service Routine Declaration*/
-void USBHS_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USBHS_IRQHandler(void) __attribute__((interrupt("machine")));
 
 /*********************************************************************
  * @fn      USB_TestMode_Deal

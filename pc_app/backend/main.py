@@ -35,7 +35,8 @@ from serial_forwarder import SerialForwarder
 from protocol import encode_packet
 from flasher import flash_firmware, detect_bootloader, erase_flash
 from trajectory_calculator import TrajectoryCalculator, TrajectoryConfig, Detection
-from capture_inference import draw_detections_on_frame, encode_frame_jpeg
+from capture_inference import draw_detections_on_frame, encode_frame_jpeg, update_class_names
+from config import Config
 
 # 锁模式需要键盘监听
 try:
@@ -81,7 +82,27 @@ class MouseForwarderBackend:
         self.capture_card = None
         self.detector = None
         self.trajectory = TrajectoryCalculator()
+
+        # 持久化配置 (必须在其他配置之前加载)
+        self.config = Config()
         
+        # 从持久化配置恢复轨迹参数
+        traj_cfg = self.config.get('trajectory', default={})
+        if traj_cfg:
+            for k, v in traj_cfg.items():
+                if hasattr(self.trajectory.config, k):
+                    setattr(self.trajectory.config, k, v)
+            # 从持久化配置恢复轨迹参数 (但不恢复 enabled 状态, 需手动开启)
+            saved_enabled = traj_cfg.get('enabled', False)
+            if 'enabled' in traj_cfg:
+                del traj_cfg['enabled']
+            for k, v in traj_cfg.items():
+                if hasattr(self.trajectory.config, k):
+                    setattr(self.trajectory.config, k, v)
+            self._trajectory_enabled = False
+            self.trajectory.config.enabled = False
+            logger.info(f"Loaded trajectory config from saved settings")
+
         # WebSocket 客户端
         self._ws_client: Optional[Any] = None
         
@@ -112,6 +133,11 @@ class MouseForwarderBackend:
         self._trigger_threshold = 5  # 自动扳机触发阈值 (像素)
         self._trigger_armed = False  # 扳机状态 (避免重复触发)
         self._trigger_last_fire = 0  # 上次触发时间
+        
+        # 管线帧率统计
+        self._pipeline_fps = 0.0
+        self._pipeline_fps_count = 0
+        self._pipeline_fps_timer = 0.0
         
         # 检测管道任务
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -146,8 +172,16 @@ class MouseForwarderBackend:
         self.mouse.start()
         self._mouse_active = True
         
+        # 自动查找模型: 优先用启动参数, 其次自动检测, 最后用最后加载的
+        if not self.model_path or not os.path.exists(self.model_path):
+            # 尝试从持久化配置恢复最后加载的模型
+            saved_model = self.config.get('model', 'last_path', default='')
+            if saved_model and os.path.exists(saved_model):
+                self.model_path = saved_model
+                logger.info(f"Restored last model from config: {self.model_path}")
+        
         # 初始化检测组件 (如果提供了模型路径)
-        if self.model_path:
+        if self.model_path and os.path.exists(self.model_path):
             await self._init_detection_pipeline(self.model_path)
             # 自动启动采集卡 (后台启动, 不阻塞)
             if self.detector and self.detector.is_loaded:
@@ -223,6 +257,10 @@ class MouseForwarderBackend:
             
             # 加载模型 (在后台线程中执行, 避免阻塞)
             await asyncio.to_thread(self.detector.load_model, model_path)
+            # 更新类别名称 (与实际模型匹配)
+            await asyncio.to_thread(update_class_names, model_path)
+            # 保存最后加载的模型路径
+            self.config.set('model', 'last_path', model_path)
             
             logger.info("Detection pipeline initialized")
             
@@ -493,6 +531,17 @@ class MouseForwarderBackend:
                     await asyncio.sleep(0.001)
                     continue
                 
+                # 管线帧率统计 (只统计实际处理的帧)
+                self._pipeline_fps_count += 1
+                fps_now = time.time()
+                if self._pipeline_fps_timer == 0:
+                    self._pipeline_fps_timer = fps_now
+                fps_elapsed = fps_now - self._pipeline_fps_timer
+                if fps_elapsed >= 1.0:
+                    self._pipeline_fps = self._pipeline_fps_count / fps_elapsed
+                    self._pipeline_fps_count = 0
+                    self._pipeline_fps_timer = fps_now
+                
                 # 执行检测 (在后台线程运行, 不阻塞)
                 if self.detector and self.detector.is_loaded:
                     detections = await asyncio.to_thread(
@@ -504,12 +553,12 @@ class MouseForwarderBackend:
                 self.stats['detections'] = len(detections)
                 
                 # 计算轨迹
-                ai_steps = self.trajectory.calculate(detections)
+                ai_steps = self.trajectory.calculate(detections) if self._trajectory_enabled else []
 
                 # 自动扳机检测: 如果目标在屏幕中心阈值范围内, 自动按下鼠标左键
                 await self._check_auto_trigger(detections)
 
-                # 发送 AI 轨迹到串口
+                # 发送 AI 轨迹到串口 (仅当轨迹启用时)
                 if ai_steps and self.serial.is_connected:
                     for dx, dy in ai_steps:
                         packet = encode_packet(0, dx, dy, 0)
@@ -812,8 +861,12 @@ class MouseForwarderBackend:
                         from object_detector import ObjectDetector
                         self.detector = ObjectDetector()
                         await asyncio.to_thread(self.detector.load_model, model_path)
+                    # 更新类别名称 (与实际模型匹配)
+                    await asyncio.to_thread(update_class_names, model_path)
 
                     self.model_path = model_path
+                    # 保存最后加载的模型路径
+                    self.config.set('model', 'last_path', model_path)
                     logger.info(f"Model loaded: {model_path}")
 
                     # 如果采集卡正在运行, 重新启动检测管道
@@ -838,15 +891,17 @@ class MouseForwarderBackend:
             elif msg_type == 'trajectory_enable':
                 self._trajectory_enabled = True
                 self.trajectory.config.enabled = True
+                self.config.set('trajectory', 'enabled', True)
                 logger.info("Trajectory enabled")
                 await self._send({
                     'type': 'trajectory_status',
                     'enabled': True,
                 })
-            
+
             elif msg_type == 'trajectory_disable':
                 self._trajectory_enabled = False
                 self.trajectory.config.enabled = False
+                self.config.set('trajectory', 'enabled', False)
                 logger.info("Trajectory disabled")
                 await self._send({
                     'type': 'trajectory_status',
@@ -861,6 +916,9 @@ class MouseForwarderBackend:
                     config.max_step_px = int(data['max_step_px'])
                 if 'min_confidence' in data:
                     config.min_confidence = float(data['min_confidence'])
+                    # 同步到目标检测器 (推理时也用这个阈值)
+                    if self.detector:
+                        self.detector.CONFIDENCE_THRESHOLD = config.min_confidence
                 if 'target_offset_x' in data:
                     config.target_offset_x = int(data['target_offset_x'])
                 if 'target_offset_y' in data:
@@ -877,7 +935,25 @@ class MouseForwarderBackend:
                     self._trigger_enabled = bool(data['trigger_enabled'])
                 if 'trigger_threshold' in data:
                     self._trigger_threshold = int(data['trigger_threshold'])
+                if 'invert_ai_x' in data:
+                    config.invert_ai_x = bool(data['invert_ai_x'])
+                if 'invert_ai_y' in data:
+                    config.invert_ai_y = bool(data['invert_ai_y'])
                 self.trajectory.set_config(config)
+                # 持久化保存所有轨迹配置
+                self.config.set('trajectory', 'smooth_factor', config.smooth_factor)
+                self.config.set('trajectory', 'max_step_px', config.max_step_px)
+                self.config.set('trajectory', 'min_confidence', config.min_confidence)
+                self.config.set('trajectory', 'target_offset_x', config.target_offset_x)
+                self.config.set('trajectory', 'target_offset_y', config.target_offset_y)
+                self.config.set('trajectory', 'jitter_amount', config.jitter_amount)
+                self.config.set('trajectory', 'target_priority', config.target_priority)
+                self.config.set('trajectory', 'prediction_ticks', config.prediction_ticks)
+                self.config.set('trajectory', 'fov_radius', config.fov_radius)
+                self.config.set('trajectory', 'trigger_enabled', self._trigger_enabled)
+                self.config.set('trajectory', 'trigger_threshold', self._trigger_threshold)
+                self.config.set('trajectory', 'invert_ai_x', config.invert_ai_x)
+                self.config.set('trajectory', 'invert_ai_y', config.invert_ai_y)
                 await self._send({
                     'type': 'trajectory_config_ack',
                     'config': {
@@ -892,6 +968,8 @@ class MouseForwarderBackend:
                         'fov_radius': config.fov_radius,
                         'trigger_enabled': self._trigger_enabled,
                         'trigger_threshold': self._trigger_threshold,
+                        'invert_ai_x': config.invert_ai_x,
+                        'invert_ai_y': config.invert_ai_y,
                     }
                 })
             
@@ -1021,6 +1099,23 @@ class MouseForwarderBackend:
                 ],
                 'ai_steps': [{'dx': s[0], 'dy': s[1]} for s in ai_steps],
                 'trajectory_stats': self.trajectory.get_stats(),
+                'inference_ms': round(self.detector.avg_inference_time_ms, 1) if self.detector and self.detector.is_loaded else 0,
+                'pipeline_fps': round(self._pipeline_fps, 1),
+                'inf_fps': round(1000 / self.detector.avg_inference_time_ms, 1) if self.detector and self.detector.avg_inference_time_ms > 0 else 0,
+                # 目标与屏幕中心的偏移量 (用于前端显示)
+                'target_dx': self.trajectory.aim_x - self._screen_w / 2 if self.trajectory.selected_target else 0,
+                'target_dy': self.trajectory.aim_y - self._screen_h / 2 if self.trajectory.selected_target else 0,
+                # AI 步数总计
+                'ai_step_count': len(ai_steps),
+                'ai_step_total_dx': sum(s[0] for s in ai_steps) if ai_steps else 0,
+                'ai_step_total_dy': sum(s[1] for s in ai_steps) if ai_steps else 0,
+                # 对准状态
+                'is_settled': self.trajectory.is_settled,
+                'selected_target': self.trajectory.selected_target is not None,
+                'target_info': {
+                    'class_id': self.trajectory.selected_target.class_id,
+                    'confidence': round(self.trajectory.selected_target.confidence, 3),
+                } if self.trajectory.selected_target else None,
             }
             
             # 如果有帧且画面显示开启, 添加 JPEG 编码的标注帧
@@ -1028,11 +1123,12 @@ class MouseForwarderBackend:
                 # 在后台线程中执行绘图和编码
                 inference_ms = self.detector.avg_inference_time_ms if self.detector else 0
 
-                # 先缩小到 720p 再编码, 减少传输延迟
+                # 先缩小到 1080p 再编码, 减少传输延迟
                 import cv2
                 h, w = frame.shape[:2]
-                if w > 1280:
-                    scale = 1280 / w
+                scale = 1.0
+                if w > 1920:
+                    scale = 1920 / w
                     new_w, new_h = int(w * scale), int(h * scale)
                     small_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
                     # 检测框坐标也要按比例缩放
@@ -1047,9 +1143,19 @@ class MouseForwarderBackend:
                 else:
                     small_frame = frame
                     scaled_detections = detections
+                    scale = 1.0
+
+                # 缩放瞄准点坐标
+                sel = self.trajectory.selected_target
+                scaled_target_cx = sel.cx * scale if sel else None
+                scaled_target_cy = sel.cy * scale if sel else None
+                scaled_aim_x = self.trajectory.aim_x * scale
+                scaled_aim_y = self.trajectory.aim_y * scale
 
                 annotated = await asyncio.to_thread(
-                    draw_detections_on_frame, small_frame.copy(), scaled_detections, inference_ms
+                    draw_detections_on_frame, small_frame.copy(), scaled_detections, self._pipeline_fps, inference_ms,
+                    scaled_target_cx, scaled_target_cy, scaled_aim_x, scaled_aim_y,
+                    self.trajectory.is_settled
                 )
                 # 降低 JPEG 质量到 50 以加快编码速度
                 jpeg_bytes = await asyncio.to_thread(encode_frame_jpeg, annotated, 50)

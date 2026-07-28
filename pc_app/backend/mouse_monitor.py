@@ -2,6 +2,7 @@
 mouse_monitor.py - 鼠标捕获模块
 
 使用 pynput 监听全局鼠标事件, 计算相对位移并回调。
+支持动态抑制 (suppress) 模式。
 """
 
 import asyncio
@@ -41,11 +42,11 @@ BUTTON_BITS = {
 
 class MouseMonitor:
     """
-    鼠标监控器
-    
+    鼠标监控器 (基于 pynput)
+
     使用 pynput 的全局鼠标监听器捕获鼠标事件,
     计算相对位移并通过回调函数通知。
-    支持 suppress 模式: 阻止鼠标事件传播到本机 OS。
+    支持动态切换 suppress 模式 (重启监听器)。
     """
     
     def __init__(self, on_event: Optional[Callable[[MouseEvent], None]] = None):
@@ -58,10 +59,10 @@ class MouseMonitor:
         self._prev_x: Optional[int] = None
         self._prev_y: Optional[int] = None
         self._buttons_state = 0
+        self._skip_move = False  # 跳过下一个移动事件 (SetCursorPos 回弹)
 
-        # 事件队列 (用于异步处理)
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._event_queue: asyncio.Queue = asyncio.Queue()
+        # 屏幕尺寸 (用于检测光标环绕跳边)
+        self._screen_w, self._screen_h = self._get_screen_size()
     
     @property
     def is_running(self) -> bool:
@@ -74,6 +75,21 @@ class MouseMonitor:
     def set_event_callback(self, callback: Callable[[MouseEvent], None]):
         """设置事件回调"""
         self._on_event = callback
+
+    def skip_next_move(self):
+        """跳过下一个移动事件 (用于 SetCursorPos 后防止回弹)"""
+        self._skip_move = True
+
+    def suppress_current_event(self):
+        """
+        抑制当前 WH_MOUSE_LL 事件 (PowerToys 风格: return 1)
+
+        在 pynput 回调中调用此方法, 设置 listener._suppress = True。
+        pynput 的 C 代码会在回调返回后检查此标志, 并返回 1 抑制原始事件。
+        这样 SetCursorPos 后的回弹事件被抑制, 光标不会回到原位。
+        """
+        if self._listener:
+            self._listener._suppress = True
     
     def start(self, suppress: bool = False):
         """启动鼠标监听"""
@@ -87,7 +103,7 @@ class MouseMonitor:
         self._prev_y = None
         self._buttons_state = 0
         
-        # 创建监听器, suppress=True 阻止事件传播到本机
+        # 创建监听器
         self._listener = mouse.Listener(
             on_move=self._on_move,
             on_click=self._on_click,
@@ -95,6 +111,7 @@ class MouseMonitor:
             suppress=suppress,
         )
         self._listener.start()
+        self._listener.wait()
         logger.info(f"Mouse monitor started (suppress={suppress})")
     
     def stop(self):
@@ -107,14 +124,13 @@ class MouseMonitor:
     
     def set_suppress(self, suppress: bool) -> bool:
         """
-        切换锁定模式
+        切换抑制模式 (重启监听器)
 
-        锁定模式只屏蔽鼠标按钮事件 (左/右/中键), 不影响移动和滚轮。
-        这样本机光标位置正常, 不会闪回, 但点击不会作用到本机窗口。
-        移动和点击数据照常转发到目标 PC。
+        切换 suppress 后需要重启监听器, 会短暂丢失事件。
+        但这是唯一可靠的方式 (pynput 不支持动态切换 suppress)。
 
         Args:
-            suppress: True=锁定 (屏蔽按钮), False=正常
+            suppress: True=抑制 (阻止事件传递到本机)
 
         Returns:
             是否成功切换
@@ -126,29 +142,25 @@ class MouseMonitor:
         if self._suppressed == suppress:
             return True
 
-        logger.info(f"Switching lock mode: {self._suppressed} -> {suppress}")
-        self._suppressed = suppress
+        logger.info(f"Switching suppress: {self._suppressed} -> {suppress}")
 
-        # 只在按钮事件上 suppress, 不拦截移动
-        # 重新创建监听器, suppress=True 会拦截按钮, 但我们让 on_move 正常工作
+        # 停止旧监听器
         old_listener = self._listener
         if old_listener:
             old_listener.stop()
-            # 等待监听器线程退出
+            # 等待线程退出
             if hasattr(old_listener, '_thread') and old_listener._thread:
                 for _ in range(50):
                     if not old_listener.running:
                         break
-                    time.sleep(0.1)
-            time.sleep(0.1)
-
-        # 重置位置跟踪 (避免重启后产生跳变)
+                    time.sleep(0.02)
+            time.sleep(0.05)
+        
+        self._suppressed = suppress
         self._prev_x = None
         self._prev_y = None
-
+        
         # 创建新监听器
-        # suppress=True 在 Windows 上: 拦截按钮事件, 但移动事件仍会触发回调
-        # 这样本机不会响应点击, 但光标位置正常更新
         self._listener = mouse.Listener(
             on_move=self._on_move,
             on_click=self._on_click,
@@ -157,10 +169,10 @@ class MouseMonitor:
         )
         self._listener.start()
         self._listener.wait()
-
-        logger.info(f"Lock mode changed to {suppress}")
+        
+        logger.info(f"Suppress changed to {suppress}")
         return True
-
+    
     def _emit_event(self, event: MouseEvent):
         """发送事件到回调"""
         if self._on_event:
@@ -168,15 +180,31 @@ class MouseMonitor:
                 self._on_event(event)
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
-
+    
     def _on_move(self, x: int, y: int):
         """鼠标移动回调"""
         if not self._running:
             return
 
+        # 重置抑制标志 (上次回调可能设置了 suppress_current_event)
+        if self._listener and self._listener._suppress:
+            self._listener._suppress = False
+
+        # 跳过 SetCursorPos 回弹事件 (不转发, 不更新 _prev_x/y)
+        if self._skip_move:
+            self._skip_move = False
+            return
+
         if self._prev_x is not None and self._prev_y is not None:
             dx = x - self._prev_x
             dy = y - self._prev_y
+
+            # 检测光标环绕跳边: 大幅跳跃超过屏幕尺寸一半
+            if abs(dx) > self._screen_w // 2 or abs(dy) > self._screen_h // 2:
+                logger.debug(f"Cursor wrap detected: dx={dx}, dy={dy}, ignoring")
+                self._prev_x = x
+                self._prev_y = y
+                return
 
             # 只发送有实际位移的事件
             if dx != 0 or dy != 0:
@@ -200,7 +228,6 @@ class MouseMonitor:
         if not self._running:
             return
 
-        # 更新按钮状态
         bit = BUTTON_BITS.get(button, 0)
         if bit == 0:
             return  # 不支持的按钮
@@ -210,7 +237,6 @@ class MouseMonitor:
         else:
             self._buttons_state &= ~bit
 
-        # 发送点击事件 (带 0 位移)
         event = MouseEvent(
             buttons=self._buttons_state,
             dx=0,
@@ -228,7 +254,6 @@ class MouseMonitor:
         if not self._running:
             return
         
-        # dy 是垂直滚动, dx 是水平滚动 (通常为 0)
         event = MouseEvent(
             buttons=self._buttons_state,
             dx=0,
@@ -241,3 +266,12 @@ class MouseMonitor:
             forward=bool(self._buttons_state & 32),
         )
         self._emit_event(event)
+    
+    def _get_screen_size(self):
+        """获取屏幕尺寸 (用于检测光标环绕跳边)"""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        except Exception:
+            return 1920, 1080

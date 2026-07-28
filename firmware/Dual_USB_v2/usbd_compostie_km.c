@@ -39,8 +39,8 @@ volatile uint8_t  USART_Send_Cnt = 0x00;
 
 /*******************************************************************************/
 /* Interrupt Function Declaration */
-void TIM3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
-void USART2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void TIM3_IRQHandler(void) __attribute__((interrupt("machine")));
+void USART2_IRQHandler(void) __attribute__((interrupt("machine")));
 
 /*********************************************************************
  * @fn      TIM3_Init

@@ -22,6 +22,11 @@ class CapturePanel {
         this.captureDetections = document.getElementById('capture-detections');
         this.captureInference = document.getElementById('capture-inference');
         this.captureResolution = document.getElementById('capture-resolution');
+		this.captureTargetOffset = document.getElementById('capture-target-offset');
+	this.captureAiSteps = document.getElementById('capture-ai-steps');
+	this.captureSettled = document.getElementById('capture-settled');
+	this.capturePipelineFps = document.getElementById('capture-pipeline-fps');
+	this.captureInfFps = document.getElementById('capture-inf-fps');
         this.trailCanvas = document.getElementById('trail-canvas');
         this.trailCtx = null;
         this.emptyState = document.getElementById('capture-empty');
@@ -110,6 +115,15 @@ class CapturePanel {
                 this._updateVideoBtn();
             });
         }
+
+        // 清空瞄准日志
+        const btnClearAim = document.getElementById('btn-clear-aim-log');
+        if (btnClearAim) {
+            btnClearAim.addEventListener('click', () => {
+                const container = document.getElementById('aim-log-entries');
+                if (container) container.innerHTML = '';
+            });
+        }
     }
 
     /**
@@ -160,17 +174,69 @@ class CapturePanel {
             this._lastAiSteps = data.ai_steps;
         }
 
-        // 更新推理信息
-        if (data.trajectory_stats && this.captureInference) {
-            const stats = data.trajectory_stats;
-            // 显示推理时间(ms) + 轨迹计算数
-            this.captureInference.textContent = `${stats.targets_acquired || 0}`;
-        }
+	// 更新推理信息 (显示推理耗时)
+			if (this.captureInference) {
+			    if (data.inference_ms !== undefined) {
+			        this.captureInference.textContent = `${data.inference_ms}ms`;
+			    } else if (data.trajectory_stats) {
+			        this.captureInference.textContent = `${data.trajectory_stats.targets_acquired || 0}`;
+			    }
+			}
 
-        // 更新分辨率
-        if (data.frame_width && data.frame_height && this.captureResolution) {
-            this.captureResolution.textContent = `${data.frame_width}x${data.frame_height}`;
-        }
+			// 更新管线帧率
+			if (data.pipeline_fps !== undefined && this.capturePipelineFps) {
+			    this.capturePipelineFps.textContent = `${data.pipeline_fps} FPS`;
+			}
+
+			// 更新推理帧率
+			if (data.inf_fps !== undefined && this.captureInfFps) {
+			    this.captureInfFps.textContent = `${data.inf_fps} FPS`;
+			}
+
+// 更新分辨率
+		if (data.frame_width && data.frame_height && this.captureResolution) {
+		    this.captureResolution.textContent = `${data.frame_width}x${data.frame_height}`;
+		}
+
+		// 更新目标偏移
+		if (this.captureTargetOffset) {
+		    if (data.target_dx !== undefined && data.target_dy !== undefined) {
+		        const dx = Math.round(data.target_dx);
+		        const dy = Math.round(data.target_dy);
+		        this.captureTargetOffset.textContent = `(${dx >= 0 ? '+' : ''}${dx}, ${dy >= 0 ? '+' : ''}${dy})`;
+		        this.captureTargetOffset.style.color = (Math.abs(dx) < 5 && Math.abs(dy) < 5) ? 'var(--status-ok)' : 'var(--accent)';
+		    } else {
+		        this.captureTargetOffset.textContent = '-';
+		        this.captureTargetOffset.style.color = '';
+		    }
+		}
+
+		// 更新 AI 步数
+		if (this.captureAiSteps) {
+		    if (data.ai_step_count && data.ai_step_count > 0) {
+		        const totalDx = data.ai_step_total_dx || 0;
+		        const totalDy = data.ai_step_total_dy || 0;
+		        this.captureAiSteps.textContent = `${data.ai_step_count}步 (${totalDx >= 0 ? '+' : ''}${totalDx}, ${totalDy >= 0 ? '+' : ''}${totalDy})`;
+		        this.captureAiSteps.style.color = 'var(--status-ok)';
+		    } else {
+		        this.captureAiSteps.textContent = '待命中';
+		        this.captureAiSteps.style.color = 'var(--text-muted)';
+		    }
+		}
+
+		// 更新对准状态
+		if (this.captureSettled) {
+		    if (data.is_settled) {
+		        this.captureSettled.textContent = '✅ 已对准';
+		        this.captureSettled.style.color = 'var(--status-ok)';
+		    } else if (data.selected_target) {
+		        this.captureSettled.textContent = '🎯 瞄准中';
+		        this.captureSettled.style.color = 'var(--accent)';
+		    } else {
+		        this.captureSettled.textContent = '⏳ 搜索中';
+		        this.captureSettled.style.color = 'var(--text-muted)';
+		    }
+		}
 
         // 如果有 JPEG 帧, 显示
         if (data.frame_jpeg) {
@@ -179,9 +245,53 @@ class CapturePanel {
             if (this.emptyState) this.emptyState.style.display = 'none';
         }
 
-        // 在 Canvas 上绘制检测框和轨迹
-        this._drawOverlay();
-    }
+// 在 Canvas 上绘制检测框和轨迹
+		this._drawOverlay();
+
+		// 处理瞄准日志事件
+		if (data.aim_events && data.aim_events.length > 0) {
+		    this._addAimLog(data.aim_events);
+		}
+	    }
+
+	    /**
+	     * 添加瞄准日志条目
+	     */
+	    _addAimLog(events) {
+		const container = document.getElementById('aim-log-entries');
+		if (!container) return;
+
+		for (const ev of events) {
+		    const entry = document.createElement('div');
+		    entry.className = `aim-log-entry al-${ev.type}`;
+
+		    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+
+		    const iconMap = {
+		        detection: '🔍',
+		        target: '🎯',
+		        switch: '🔄',
+		        settle: '✅',
+		        step: '📤',
+		        search: '⏳',
+		    };
+
+		    entry.innerHTML = `
+		        <span class="al-time">[${time}]</span>
+		        <span class="al-icon">${iconMap[ev.type] || '•'}</span>
+		        <span class="al-text">${this._escapeHtml(ev.text)}</span>
+		    `;
+		    container.appendChild(entry);
+		}
+
+		// 限制最多 200 条
+		while (container.children.length > 200) {
+		    container.removeChild(container.firstChild);
+		}
+
+		// 自动滚动到底部
+		container.scrollTop = container.scrollHeight;
+	    }
 
     /**
      * 显示 JPEG 帧
@@ -224,39 +334,8 @@ class CapturePanel {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, displayW, displayH);
 
-        // 绘制检测框
-        const scaleX = displayW / (this._frameWidth || 1);
-        const scaleY = displayH / (this._frameHeight || 1);
-
-        for (const det of this._lastDetections) {
-            const x = det.x * scaleX;
-            const y = det.y * scaleY;
-            const w = det.w * scaleX;
-            const h = det.h * scaleY;
-
-            // 根据类别选择颜色
-            const colors = [
-                'rgba(0, 255, 0, 0.8)',    // 0: head - 绿色
-                'rgba(0, 200, 255, 0.8)',   // 1: body - 橙色
-                'rgba(255, 100, 0, 0.8)',   // 2: weapon - 蓝色
-                'rgba(200, 200, 200, 0.8)', // 3: unknown - 灰色
-            ];
-            const color = colors[det.class_id] || colors[3];
-
-            // 绘制边界框
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, w, h);
-
-            // 绘制标签
-            const label = `ID:${det.class_id} ${(det.confidence * 100).toFixed(0)}%`;
-            ctx.fillStyle = color;
-            ctx.font = '11px Cascadia Code, Consolas, monospace';
-            const textW = ctx.measureText(label).width;
-            ctx.fillRect(x, y - 18, textW + 6, 18);
-            ctx.fillStyle = '#000';
-            ctx.fillText(label, x + 3, y - 5);
-        }
+        // 绘制检测框 (已由后端画在 JPEG 上, 跳过避免双框)
+        // 轨迹绘制在下方 _drawTrail() 中
 
         // 绘制 AI 轨迹连线
         this._drawTrail();

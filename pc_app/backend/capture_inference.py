@@ -14,7 +14,9 @@ capture_inference.py - 采集卡视频捕获 + ONNX 推理引擎
 """
 
 import asyncio
+import colorsys
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -25,21 +27,68 @@ import numpy as np
 logger = logging.getLogger('capture')
 
 # 模型参数
-MODEL_PATH = 'valorant.onnx'  # 相对于项目根目录
+MODEL_PATH = 'best.pt'  # 默认模型 (支持 .pt 和 .onnx)
 INPUT_SIZE = 256  # 模型输入尺寸 256x256
 CONF_THRESHOLD = 0.25  # 置信度阈值
 NMS_THRESHOLD = 0.45  # NMS IoU 阈值
 
-# 类别名称 (4 类, 根据 Valorant 场景)
-CLASS_NAMES = ['head', 'body', 'weapon', 'unknown']
+# 类别名称: 从 ONNX 模型 metadata 读取, 不存在则用默认值
+_MODEL_PATH = None
+for _p in [
+    os.path.join(os.path.dirname(__file__), '..', '..', 'best.onnx'),
+    os.path.join(os.path.dirname(__file__), '..', '..', 'valorant.onnx'),
+    os.path.join(os.path.dirname(__file__), '..', 'best.onnx'),
+    os.path.join(os.path.dirname(__file__), 'best.onnx'),
+]:
+    if os.path.exists(_p):
+        _MODEL_PATH = _p
+        break
 
-# 类别颜色 (BGR)
-CLASS_COLORS = [
-    (0, 255, 0),    # head - 绿色
-    (0, 200, 255),  # body - 橙色
-    (255, 100, 0),  # weapon - 蓝色
-    (200, 200, 200),# unknown - 灰色
-]
+
+def _load_class_names_from_onnx(onnx_path: str) -> list:
+    """从 ONNX 模型 metadata 读取类别名称"""
+    try:
+        import onnx
+        model = onnx.load(onnx_path)
+        for p in model.metadata_props:
+            if p.key == "classes":
+                return [n.strip() for n in p.value.split(",")]
+            if p.key == "names":
+                import ast
+                try:
+                    names_dict = ast.literal_eval(p.value)
+                    if isinstance(names_dict, dict):
+                        return [names_dict[i] for i in sorted(names_dict.keys())]
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return ['head', 'body', 'weapon', 'unknown']
+
+
+CLASS_NAMES = _load_class_names_from_onnx(_MODEL_PATH) if os.path.exists(_MODEL_PATH) else ['head', 'body', 'weapon', 'unknown']
+
+
+def update_class_names(model_path: str):
+    """更新类别名称 (在模型加载后调用, 确保与实际模型匹配)"""
+    global CLASS_NAMES, CLASS_COLORS
+    new_names = _load_class_names_from_onnx(model_path)
+    if new_names and len(new_names) > 0:
+        CLASS_NAMES = new_names
+        # 重新生成颜色
+        CLASS_COLORS.clear()
+        for i in range(len(CLASS_NAMES)):
+            hue = i / len(CLASS_NAMES)
+            r, g, b = colorsys.hls_to_rgb(hue, 0.5, 0.8)
+            CLASS_COLORS.append((int(b * 255), int(g * 255), int(r * 255)))
+
+
+# 类别颜色 (BGR) - 动态生成
+CLASS_COLORS = []
+for i in range(len(CLASS_NAMES)):
+    hue = i / len(CLASS_NAMES)
+    r, g, b = colorsys.hls_to_rgb(hue, 0.5, 0.8)
+CLASS_COLORS.append((int(b * 255), int(g * 255), int(r * 255)))
 
 
 @dataclass
@@ -74,6 +123,7 @@ class CaptureResult:
     """一次捕获+推理的结果"""
     detections: list = field(default_factory=list)
     fps: float = 0.0
+    inf_fps: float = 0.0  # 推理 FPS
     frame_jpeg: Optional[bytes] = None  # JPEG 压缩帧用于前端显示
 
 
@@ -104,6 +154,9 @@ class CaptureInferenceEngine:
         self._fps_counter = 0
         self._fps_timer = 0.0
         self._current_fps = 0.0
+        self._inf_counter = 0  # 推理帧数计数
+        self._inf_timer = 0.0  # 推理计时器
+        self._current_inf_fps = 0.0  # 当前推理 FPS
 
         # 发送帧到前端的间隔 (降低带宽)
         self._frame_interval = 0.1  # 每 100ms 发一帧
@@ -423,15 +476,6 @@ class CaptureInferenceEngine:
                 0.5, (0, 0, 0), 1, cv2.LINE_AA
             )
 
-        # 绘制 FPS
-        fps_text = f"FPS: {self._current_fps:.1f}"
-        cv2.putText(
-            frame, fps_text,
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7, (0, 255, 0), 2, cv2.LINE_AA
-        )
-
         return frame
 
     def _run_capture_loop(self):
@@ -451,6 +495,9 @@ class CaptureInferenceEngine:
         self._fps_timer = time.time()
         self._fps_counter = 0
         self._current_fps = 0.0
+        self._inf_timer = time.time()
+        self._inf_counter = 0
+        self._current_inf_fps = 0.0
         self._last_frame_time = 0.0
 
         while self._running:
@@ -463,7 +510,7 @@ class CaptureInferenceEngine:
             self._fps_counter += 1
             now = time.time()
 
-            # 每秒更新 FPS
+            # 每秒更新管线 FPS
             elapsed = now - self._fps_timer
             if elapsed >= 1.0:
                 self._current_fps = self._fps_counter / elapsed
@@ -472,10 +519,19 @@ class CaptureInferenceEngine:
 
             # 推理
             try:
+                t0 = time.perf_counter()
                 input_tensor = self.preprocess(frame)
                 output = self._session.run(['output0'], {'images': input_tensor})[0]
                 h, w = frame.shape[:2]
                 detections = self.postprocess(output, h, w)
+                self._inf_counter += 1
+
+                # 每秒更新推理 FPS
+                inf_elapsed = now - self._inf_timer
+                if inf_elapsed >= 1.0:
+                    self._current_inf_fps = self._inf_counter / inf_elapsed
+                    self._inf_counter = 0
+                    self._inf_timer = now
             except Exception as e:
                 logger.error(f"Inference error: {e}")
                 detections = []
@@ -503,6 +559,7 @@ class CaptureInferenceEngine:
                 result = CaptureResult(
                     detections=detections,
                     fps=self._current_fps,
+                    inf_fps=self._current_inf_fps,
                     frame_jpeg=frame_jpeg,
                 )
                 asyncio.run_coroutine_threadsafe(
@@ -554,9 +611,13 @@ class CaptureInferenceEngine:
 # 便捷工具函数
 # ============================================================
 
-def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0.0) -> np.ndarray:
+def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0.0,
+                              inference_ms: float = 0.0,
+                              target_cx: float = None, target_cy: float = None,
+                              aim_x: float = 0, aim_y: float = 0,
+                              is_settled: bool = False) -> np.ndarray:
     """
-    在帧上绘制检测框 (独立函数, 供外部调用)
+    在帧上绘制检测框 + 瞄准点 + 高亮选中目标 (独立函数, 供外部调用)
 
     支持两种 Detection 格式:
     - capture_inference.Detection (有 to_dict 方法)
@@ -566,13 +627,39 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
         frame: 原始 BGR 帧
         detections: Detection 对象列表
         fps: 当前 FPS 显示
+        target_cx, target_cy: 选中目标的中心坐标 (用于高亮)
+        aim_x, aim_y: 瞄准点坐标 (中心 + 偏移)
+        is_settled: 是否已对准 (对准后框变绿)
 
     Returns:
         带标注的帧
     """
     h, w = frame.shape[:2]
+
+    # 判断是否为选中目标 (中心点匹配)
+    def _is_target(det) -> bool:
+        if target_cx is None or target_cy is None:
+            return False
+        if hasattr(det, 'cx'):
+            d_cx, d_cy = det.cx, det.cy
+        else:
+            d = det.to_dict(w, h)
+            d_cx, d_cy = d['cx'], d['cy']
+        return abs(d_cx - target_cx) < 2 and abs(d_cy - target_cy) < 2
+
     for det in detections:
-        color = CLASS_COLORS[det.class_id] if det.class_id < len(CLASS_COLORS) else (200, 200, 200)
+        is_target = _is_target(det)
+
+        # 颜色: 选中目标用亮红/亮绿, 其他用类别色
+        if is_target and is_settled:
+            color = (0, 255, 0)      # 对准 → 绿色
+            thickness = 3
+        elif is_target:
+            color = (0, 0, 255)      # 选中未对准 → 亮红
+            thickness = 3
+        else:
+            color = CLASS_COLORS[det.class_id] if det.class_id < len(CLASS_COLORS) else (200, 200, 200)
+            thickness = 2
 
         # 兼容两种 Detection 格式
         if hasattr(det, 'to_dict'):
@@ -582,7 +669,7 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
             class_name = det.class_name
             confidence = det.confidence
         else:
-            # trajectory_calculator.Detection 格式 (x, y, w, h, cx, cy, confidence, class_id)
+            # trajectory_calculator.Detection 格式
             x1 = int(det.x)
             y1 = int(det.y)
             x2 = int(det.x + det.w)
@@ -591,10 +678,13 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
             confidence = det.confidence
 
         # 绘制边界框
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
-        # 绘制标签
-        label = f"{class_name} {confidence:.2f}"
+        # 绘制标签 (选中目标加 "🎯" 标记)
+        if is_target:
+            label = f"🎯 {class_name} {confidence:.2f}"
+        else:
+            label = f"{class_name} {confidence:.2f}"
         (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(frame, (x1, y1 - label_h - 6), (x1 + label_w + 6, y1), color, -1)
         cv2.putText(
@@ -602,13 +692,18 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA
         )
 
-    # 绘制 FPS 或推理时间
-    if fps > 0:
-        info_text = f"FPS: {fps:.1f}" if fps < 100 else f"Inference: {fps:.1f}ms"
-        cv2.putText(
-            frame, info_text, (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA
-        )
+    # ── 绘制瞄准点 (十字准星) ──
+    if aim_x > 0 and aim_y > 0:
+        ax, ay = int(aim_x), int(aim_y)
+        crosshair_color = (0, 255, 0) if is_settled else (0, 255, 255)
+        crosshair_size = 12
+        # 十字线
+        cv2.line(frame, (ax - crosshair_size, ay), (ax + crosshair_size, ay), crosshair_color, 2)
+        cv2.line(frame, (ax, ay - crosshair_size), (ax, ay + crosshair_size), crosshair_color, 2)
+        # 中心点
+        cv2.circle(frame, (ax, ay), 3, crosshair_color, -1)
+        # 圆圈
+        cv2.circle(frame, (ax, ay), crosshair_size, crosshair_color, 1)
 
     return frame
 
