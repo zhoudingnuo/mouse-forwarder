@@ -84,6 +84,10 @@ class TinyNN:
         a2 = np.maximum(z2, 0)  # ReLU 在第二层
         z3 = a2 @ self.W3 + self.b3
 
+        # NaN/Inf 防护 (权重发散时输出零)
+        if not np.all(np.isfinite(z3)):
+            z3 = np.zeros_like(z3)
+
         self._cache = {'x': x, 'z1': z1, 'a1': a1, 'z2': z2, 'a2': a2, 'z3': z3}
         return z3  # 输出 (dx, dy)
 
@@ -150,13 +154,17 @@ class TinyNN:
         dL_dW1 = np.outer(x, dL_dz1)
         dL_db1 = dL_dz1
 
-        # SGD 更新
-        self.W3 -= self.lr * dL_dW3
-        self.b3 -= self.lr * dL_db3
-        self.W2 -= self.lr * dL_dW2
-        self.b2 -= self.lr * dL_db2
-        self.W1 -= self.lr * dL_dW1
-        self.b1 -= self.lr * dL_db1
+        # SGD 更新 (带梯度裁剪, 防止发散)
+        for param, grad in [(self.W1, dL_dW1), (self.b1, dL_db1),
+                            (self.W2, dL_dW2), (self.b2, dL_db2),
+                            (self.W3, dL_dW3), (self.b3, dL_db3)]:
+            # 梯度裁剪: 单元素最大变化 0.5
+            grad_clipped = np.clip(grad, -0.5, 0.5)
+            param -= self.lr * grad_clipped
+
+        # 权重裁剪: 防止极端值
+        for param in [self.W1, self.W2, self.W3]:
+            np.clip(param, -5.0, 5.0, out=param)
 
         self._train_count += 1
         self._buffer.append((abs(error_delta), intensity))
