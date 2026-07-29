@@ -399,10 +399,15 @@ class TrajectoryCalculator:
         self._last_log_time = 0.0
         logger.info("Trajectory logging started")
 
-    def stop_logging(self):
-        """停止记录轨迹日志"""
+    def stop_logging(self, save_path: str = '') -> str:
+        """停止记录轨迹日志, 如有路径则自动保存"""
         self._log_enabled = False
-        logger.info(f"Trajectory logging stopped ({len(self._log_entries)} entries)")
+        count = len(self._log_entries)
+        saved = ''
+        if save_path and count > 0:
+            saved = self.save_log_csv(save_path)
+        logger.info(f"Trajectory logging stopped ({count} entries, saved to {saved})")
+        return saved
 
     def get_log_csv(self) -> str:
         """导出日志为 CSV"""

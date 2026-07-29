@@ -1052,8 +1052,14 @@ class MouseForwarderBackend:
                 await self._send({'type': 'trajectory_log_status', 'enabled': True})
 
             elif msg_type == 'trajectory_log_stop':
-                self.trajectory.stop_logging()
-                await self._send({'type': 'trajectory_log_status', 'enabled': False})
+                log_path = os.path.join(os.path.dirname(__file__), '..', '..', 'trajectory_log.csv')
+                saved = self.trajectory.stop_logging(log_path)
+                await self._send({
+                    'type': 'trajectory_log_status',
+                    'enabled': False,
+                    'saved_to': saved,
+                    'count': len(self.trajectory._log_entries),
+                })
 
             elif msg_type == 'trajectory_log_get':
                 filepath = os.path.join(os.path.dirname(__file__), '..', '..', 'trajectory_log.csv')
