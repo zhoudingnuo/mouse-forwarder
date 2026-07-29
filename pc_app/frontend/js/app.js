@@ -317,11 +317,27 @@
         }
     }
 
-    // ================================================================
-    // 初始化
-    // ================================================================
+	    // ================================================================
+	    // 初始化
+	    // ================================================================
 
-    async function init() {
+	    let trajectoryLogging = false;  // 轨迹日志记录状态
+
+	    // 全局快捷键: Ctrl+Shift+L 开始/停止轨迹日志
+	    document.addEventListener('keydown', (e) => {
+	        if (e.ctrlKey && e.shiftKey && e.key === 'L') {
+	            trajectoryLogging = !trajectoryLogging;
+	            if (trajectoryLogging) {
+	                ws.send({ type: 'trajectory_log_start' });
+	                settings.addLog('📝 轨迹日志记录已开始', 'info');
+	            } else {
+	                ws.send({ type: 'trajectory_log_stop' });
+	                settings.addLog('📝 轨迹日志已保存到项目根目录', 'ok');
+	            }
+	        }
+	    });
+
+	    async function init() {
         mousePanel = new MousePanel();
         settings = new SettingsPanel();
         flashPanel = new FlashPanel();
