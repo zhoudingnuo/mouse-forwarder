@@ -201,7 +201,7 @@ class ObjectDetector:
             if self._debug_count % 30 == 0:
                 pre_ms = (t1 - t0) * 1000
                 inf_ms = (t2 - t1) * 1000
-                print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post=0ms | total={(t2-t0)*1000:.1f}ms | dets=0')
+                print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post=0ms | total={(t2-t0)*1000:.1f}ms | dets=0 | conf={self.CONFIDENCE_THRESHOLD:.2f}')
             return []
 
         cx = cx[mask]
@@ -258,7 +258,7 @@ class ObjectDetector:
             inf_ms = (t2 - t1) * 1000
             post_ms = (t3 - t2) * 1000
             total_ms = (t3 - t0) * 1000
-            print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post={post_ms:.1f}ms | total={total_ms:.1f}ms | dets={len(detections)}/{len(keep)}')
+            print(f'[TIMING] pre={pre_ms:.1f}ms | infer={inf_ms:.1f}ms | post={post_ms:.1f}ms | total={total_ms:.1f}ms | dets={len(detections)}/{len(keep)} | conf={self.CONFIDENCE_THRESHOLD:.2f}')
 
         return detections[:self.MAX_DETECTIONS]
 

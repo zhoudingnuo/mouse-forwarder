@@ -92,6 +92,7 @@ class MouseForwarderBackend:
         self._trigger_threshold = 5
         self._trigger_armed = False
         self._trigger_last_fire = 0
+        self._trigger_release_time = 0.0
 
         # 从持久化配置恢复轨迹参数
         traj_cfg = self.config.get('trajectory', default={})
@@ -538,7 +539,25 @@ class MouseForwarderBackend:
                     detections = []
                 
                 self.stats['detections'] = len(detections)
-                
+
+                # 每 30 帧打印当前配置状态 + 最近目标距离
+                if not hasattr(self, '_status_count'):
+                    self._status_count = 0
+                self._status_count += 1
+                if self._status_count % 30 == 0:
+                    c = self.trajectory.config
+                    # 计算最近目标到屏幕中心的距离
+                    nearest_dist = float('inf')
+                    for d in detections:
+                        dist = ((d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2) ** 0.5
+                        if dist < nearest_dist:
+                            nearest_dist = dist
+                    dist_str = f'{nearest_dist:.0f}px' if nearest_dist != float('inf') else '-'
+                    in_range = nearest_dist <= self._trigger_threshold if nearest_dist != float('inf') else False
+                    print(f'[STATUS] conf={c.min_confidence:.2f} fov={c.fov_radius} trig={self._trigger_enabled}(armed={self._trigger_armed}) '
+                          f'thr={self._trigger_threshold} dist={dist_str} in_range={in_range} '
+                          f'traj={self._trajectory_enabled} kp={c.kp:.2f}')
+
                 # 计算轨迹
                 ai_steps = self.trajectory.calculate(detections) if self._trajectory_enabled else []
 
@@ -617,12 +636,17 @@ class MouseForwarderBackend:
         # 检查是否在阈值范围内
         in_range = target_dist <= self._trigger_threshold
 
-        if in_range and not self._trigger_armed:
-            # 进入阈值范围 - 按下左键
+        # 射速限制: 距离上次开枪不足 0.5s 则不触发
+        now = time.time()
+        if in_range and now - self._trigger_last_fire >= 0.5:
+            # 开枪
             await self._fire_trigger(True, target_dist)
+            self._trigger_last_fire = now
+            # 50ms 后自动释放
             self._trigger_armed = True
-        elif not in_range and self._trigger_armed:
-            # 离开阈值范围 - 释放左键
+            self._trigger_release_time = now + 0.05
+        elif not in_range and self._trigger_armed and now >= self._trigger_release_time:
+            # 释放左键
             await self._fire_trigger(False, target_dist)
             self._trigger_armed = False
 
