@@ -529,7 +529,7 @@ class MouseForwarderBackend:
                     self._pipeline_fps_count = 0
                     self._pipeline_fps_timer = fps_now
                 
-                # 执行检测 (在后台线程运行, 不阻塞)
+                # 执行检测 (在线程池运行, 不阻塞事件循环)
                 if self.detector and self.detector.is_loaded:
                     detections = await asyncio.to_thread(
                         self.detector.detect, frame, frame.shape[:2]
@@ -545,15 +545,16 @@ class MouseForwarderBackend:
                 # 自动扳机检测: 如果目标在屏幕中心阈值范围内, 自动按下鼠标左键
                 await self._check_auto_trigger(detections)
 
-                # 发送 AI 轨迹到串口 (仅当轨迹启用时)
-                if ai_steps and self.serial.is_connected:
-                    for dx, dy in ai_steps:
-                        packet = encode_packet(0, dx, dy, 0)
-                        success = await self.serial.send(packet)
-                        if success:
-                            self.stats['trajectory_events'] += 1
-                            self.stats['packets_sent'] += 1
-                            self.stats['bytes_sent'] += len(packet)
+		                # 发送 AI 轨迹到串口 (仅当轨迹启用且物理按钮未按下时)
+		                if ai_steps and self.serial.is_connected:
+		                    # 物理按钮按下时不发 AI 轨迹, 避免按钮状态被覆盖导致拖拽变单击
+		                    if self.mouse._buttons_state == 0:
+		                        for dx, dy in ai_steps:
+		                            packet = encode_packet(0, dx, dy, 0)
+		                            await self.serial.send(packet)
+		                            self.stats['trajectory_events'] += 1
+		                            self.stats['packets_sent'] += 1
+		                            self.stats['bytes_sent'] += len(packet)
                 
                 # 发送检测结果到前端 (限频, 避免带宽过高)
                 now = time.time()
@@ -628,23 +629,22 @@ class MouseForwarderBackend:
         """
         发送扳机事件 (鼠标左键按下/释放)
 
-        通过串口发送给目标 PC, 同时通过本机 pynput 模拟 (如果未锁定模式)
+        通过鼠标队列发送 (与物理鼠标事件共用同一通道), 避免串口竞争。
         """
         # 计算按钮状态
         if pressed:
-            self._buttons_state_for_trigger = 1  # bit0 = 左键
+            buttons = 1  # bit0 = 左键
         else:
-            self._buttons_state_for_trigger = 0
+            buttons = 0
 
-        # 通过串口发送到目标 PC
-        if self.serial.is_connected:
-            packet = encode_packet(
-                buttons=self._buttons_state_for_trigger,
-                dx=0, dy=0, wheel=0
-            )
-            await self.serial.send(packet)
+        # 放入鼠标转发队列 (与物理鼠标同队列, 保证时序正确)
+        packet = encode_packet(buttons=buttons, dx=0, dy=0, wheel=0)
+        try:
+            self._mouse_queue.put_nowait(packet)
             self.stats['packets_sent'] += 1
             self.stats['bytes_sent'] += len(packet)
+        except queue.Full:
+            pass
 
         # 通知前端扳机触发
         if self._ws_client:

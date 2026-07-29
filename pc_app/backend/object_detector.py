@@ -160,11 +160,11 @@ class ObjectDetector:
         y1 = cy - crop_size // 2
         crop = frame[y1:y1 + crop_size, x1:x1 + crop_size]  # [640, 640, 3] BGR
         # 预分配 buffer, 复用 (640×640×3 × float32 = 4.9MB)
-        if self._preproc_buffer is None or self._preproc_buffer.shape[1] != crop_size:
+        if self._preproc_buffer is None or self._preproc_buffer.shape[2] != crop_size:
             self._preproc_buffer = np.empty((1, 3, crop_size, crop_size), dtype=np.float32)
         buf = self._preproc_buffer
         scale = np.float32(1.0 / 255.0)
-        # BGR→RGB + HWC→CHW + float32/255 写入预分配 buffer
+        # BGR→RGB + HWC→CHW + float32/255 写入预分配 buffer (无临时数组)
         buf[0, 0] = crop[:, :, 2] * scale  # R
         buf[0, 1] = crop[:, :, 1] * scale  # G
         buf[0, 2] = crop[:, :, 0] * scale  # B

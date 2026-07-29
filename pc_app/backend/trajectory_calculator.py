@@ -118,6 +118,7 @@ class TrajectoryCalculator:
         # 锁定目标跟踪 (避免来回切换)
         self._locked_target_cx: Optional[float] = None
         self._locked_target_cy: Optional[float] = None
+        self._locked_target_class: int = 0  # 锁定目标的 class_id
         self._locked_ref_cx: Optional[float] = None  # 锁定时的参考点 X (所有候选的中心)
         self._locked_ref_cy: Optional[float] = None  # 锁定时的参考点 Y
         self._lock_frames: int = 0
@@ -325,6 +326,7 @@ class TrajectoryCalculator:
         self._locked_target_cy = None
         self._locked_ref_cx = None
         self._locked_ref_cy = None
+        self._locked_target_class = 0
         self._lock_frames = 0
         self._settled_frames = 0
         self._missed_frames = 0
@@ -370,7 +372,7 @@ class TrajectoryCalculator:
                         y=self._locked_target_cy - 20,
                         w=40, h=40,
                         confidence=0.5,
-                        class_id=0,
+                        class_id=self._locked_target_class,
                         cx=self._locked_target_cx,
                         cy=self._locked_target_cy,
                     )
@@ -378,6 +380,7 @@ class TrajectoryCalculator:
             self._locked_target_cy = None
             self._locked_ref_cx = None
             self._locked_ref_cy = None
+            self._locked_target_class = 0
             self._lock_frames = 0
             self._missed_frames = 0
             return None
@@ -403,6 +406,7 @@ class TrajectoryCalculator:
                 self._locked_target_cy = None
                 self._locked_ref_cx = None
                 self._locked_ref_cy = None
+                self._locked_target_class = 0
                 self._lock_frames = 0
                 return None
 
@@ -411,6 +415,7 @@ class TrajectoryCalculator:
             self._locked_target_cy = None
             self._locked_ref_cx = None
             self._locked_ref_cy = None
+            self._locked_target_class = 0
             self._lock_frames = 0
             return None
 
@@ -445,6 +450,7 @@ class TrajectoryCalculator:
                 self._missed_frames = 0
                 self._locked_target_cx = closest.cx
                 self._locked_target_cy = closest.cy
+                self._locked_target_class = closest.class_id
                 self._locked_ref_cx = cur_ref_cx
                 self._locked_ref_cy = cur_ref_cy
                 self._lock_frames = 60
@@ -457,6 +463,7 @@ class TrajectoryCalculator:
                 self._missed_frames = 0
                 self._locked_target_cx = nearest_to_predicted.cx
                 self._locked_target_cy = nearest_to_predicted.cy
+                self._locked_target_class = nearest_to_predicted.class_id
                 self._locked_ref_cx = cur_ref_cx
                 self._locked_ref_cy = cur_ref_cy
                 self._lock_frames = 60
@@ -467,6 +474,7 @@ class TrajectoryCalculator:
             closest = min(candidates, key=lambda d: (d.cx - self._screen_center_x) ** 2 + (d.cy - self._screen_center_y) ** 2)
             self._locked_target_cx = closest.cx
             self._locked_target_cy = closest.cy
+            self._locked_target_class = closest.class_id
             self._locked_ref_cx = sum(d.cx for d in candidates) / len(candidates)
             self._locked_ref_cy = sum(d.cy for d in candidates) / len(candidates)
             self._lock_frames = 60
