@@ -93,6 +93,8 @@ class MouseForwarderBackend:
         self._trigger_armed = False
         self._trigger_last_fire = 0
         self._trigger_release_time = 0.0
+        # 两连发间隔: 匹配 9.75发/秒 射速, 每发 ~102ms
+        self._trigger_burst_interval = 0.102  # 两发之间的间隔
 
         # 从持久化配置恢复轨迹参数
         traj_cfg = self.config.get('trajectory', default={})
@@ -564,17 +566,19 @@ class MouseForwarderBackend:
                 # 自动扳机检测
                 await self._check_auto_trigger(detections)
 
-                # AI 轨迹独立发送 (携带当前物理+扳机按钮状态)
+                # AI 轨迹独立发送 (步间 1ms 间隔, 在帧空闲时间内发完)
                 if ai_steps and self._trajectory_enabled and self.serial.is_connected:
                     btns = self.mouse._buttons_state
                     if self._trigger_armed:
                         btns |= 1  # 扳机按下左键
-                    for dx, dy in ai_steps:
+                    for i, (dx, dy) in enumerate(ai_steps):
                         packet = encode_packet(btns, dx, dy, 0)
                         await self.serial.send(packet)
                         self.stats['trajectory_events'] += 1
                         self.stats['packets_sent'] += 1
                         self.stats['bytes_sent'] += len(packet)
+                        if i < len(ai_steps) - 1:
+                            await asyncio.sleep(0.001)  # 步间 1ms 间隔
                 
                 # 发送检测结果到前端 (限频, 避免带宽过高)
                 now = time.time()
@@ -639,13 +643,24 @@ class MouseForwarderBackend:
         # 射速限制: 距离上次开枪不足 0.5s 则不触发
         now = time.time()
         if in_range and now - self._trigger_last_fire >= 0.5:
-                # 开火: press → 短暂停顿 → release, 让游戏判为两发
+                # 后台发射两连发 (不阻塞检测循环)
                 self._trigger_armed = True
-                await self._fire_trigger(True, target_dist)
-                await asyncio.sleep(0.03)  # 30ms 停顿, 游戏判为两连发
-                await self._fire_trigger(False, target_dist)
                 self._trigger_last_fire = now
+                asyncio.create_task(self._fire_burst())
                 self._trigger_armed = False
+
+    async def _fire_burst(self):
+        """后台两连发: 不阻塞检测循环, 匹配 9.75发/秒 (每发 ~102ms)"""
+        # 第1发: press → release
+        await self._fire_trigger(True)
+        await asyncio.sleep(0.01)  # 10ms 按键去抖
+        await self._fire_trigger(False)
+        # 等待射速间隔
+        await asyncio.sleep(self._trigger_burst_interval)
+        # 第2发: press → release
+        await self._fire_trigger(True)
+        await asyncio.sleep(0.01)
+        await self._fire_trigger(False)
 
     async def _fire_trigger(self, pressed: bool, target_dist: float = -1):
         """
