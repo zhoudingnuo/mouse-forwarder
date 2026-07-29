@@ -178,6 +178,9 @@ class TrajectoryCalculator:
         self._log_entries: List[LogEntry] = []
         self._last_log_time: float = 0.0
 
+        # 当前 NN 输入输出 (用于前端显示)
+        self._nn_io: dict = {}
+
     def set_config(self, config: TrajectoryConfig):
         """更新配置"""
         self.config = config
@@ -326,6 +329,11 @@ class TrajectoryCalculator:
             inp = np.array([error_x, error_y, vx, vy], dtype=np.float32)
             nn_out = self._nn.forward(inp)
             output_x, output_y = float(nn_out[0]), float(nn_out[1])
+            self._nn_io = {
+                'in': f'({error_x:.0f},{error_y:.0f},{vx:.1f},{vy:.1f})',
+                'out': f'({output_x:.1f},{output_y:.1f})',
+                'train': self._nn._train_count,
+            }
         else:
             # PID 模式
             kp = self.config.kp
@@ -435,6 +443,10 @@ class TrajectoryCalculator:
             nn_stats = self._nn.get_stats()
             stats['nn'] = nn_stats
             stats['nn_status'] = nn_stats.get('last_status', '')
+            # 每帧 I/O
+            if self._nn_io:
+                io = self._nn_io
+                stats['nn_io'] = f"in={io['in']} out={io['out']} step#{io['train']}"
         return stats
 
     # ============ 轨迹日志 ============

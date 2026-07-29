@@ -12,6 +12,7 @@ class SettingsPanel {
         this.btnRefresh = document.getElementById('btn-refresh-ports');
         this.btnClearLog = document.getElementById('btn-clear-log');
         this.logEntries = document.getElementById('log-entries');
+        this.aimLogEntries = document.getElementById('aim-log-entries');
 
         // 顶部栏指示器
         this.dotMouse = document.getElementById('dot-mouse');
@@ -132,15 +133,31 @@ class SettingsPanel {
         }
     }
 
-    /**
-     * 清空日志
-     */
-    clearLog() {
-        this.logEntries.innerHTML = '';
-        this.addLog('日志已清空', 'info');
-    }
+	    /**
+	     * 清空日志
+	     */
+	    clearLog() {
+	        this.logEntries.innerHTML = '';
+	        this.addLog('日志已清空', 'info');
+	    }
 
-    /* ---- 内部方法 ---- */
+	    /**
+	     * 添加瞄准日志 (到专用面板)
+	     */
+	    addAimLog(message) {
+	        if (!this.aimLogEntries) return;
+	        const entry = document.createElement('div');
+	        entry.className = 'log-entry';
+	        const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+	        entry.innerHTML = `<span class="log-time">[${time}]</span><span class="log-msg">${this._escapeHtml(message)}</span>`;
+	        this.aimLogEntries.appendChild(entry);
+	        this.aimLogEntries.scrollTop = this.aimLogEntries.scrollHeight;
+	        while (this.aimLogEntries.children.length > 200) {
+	            this.aimLogEntries.removeChild(this.aimLogEntries.firstChild);
+	        }
+	    }
+
+	    /* ---- 内部方法 ---- */
 
     _bindEvents() {
         this.btnConnect.addEventListener('click', () => {

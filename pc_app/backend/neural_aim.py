@@ -170,16 +170,13 @@ class TinyNN:
         self._train_count += 1
         self._buffer.append((abs(error_delta), intensity))
 
-        # 每 30 帧记录训练状态 (由前端拉取显示)
+        # 每 30 帧记录训练统计 (由 get_stats 返回)
         if self._train_count % 30 == 0:
             avg_delta = np.mean([d for d, _ in self._buffer[-30:]])
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
-            self._last_status = (f'[NN] train={self._train_count} '
-                                 f'err_delta={avg_delta:.2f} '
-                                 f'|W1|={w1_mean:.3f} |W3|={w3_mean:.3f} '
-                                 f'output=({output[0]:.2f},{output[1]:.2f})')
-            logger.info(self._last_status)
+            self._last_status = (f'🧠 train={self._train_count} err_delta={avg_delta:.1f} '
+                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f}')
 
     def get_stats(self) -> dict:
         """获取训练统计"""
