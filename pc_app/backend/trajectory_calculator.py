@@ -506,19 +506,35 @@ class TrajectoryCalculator:
 
     def _decompose_movement(self, dx: float, dy: float) -> List[Tuple[int, int]]:
         """
-        将 PID 输出限制为单步 (不再分解为多步)
+        动态步长: 远距离大步快速接近, 近距离小步精确瞄准
 
-        每帧只发一步 ( clipped to max_step_px ), 下一帧重新检测后重新计算。
-        避免 AI 预分解的多步与物理鼠标叠加导致过度瞄准。
+        步长倍数:
+          - ≥200px 距离: 3x max_step_px (快速接近)
+          - ≤10px 距离:  0.5x max_step_px (精细瞄准)
+          - 中间线性插值
+        每帧只发1步, 下一帧重新检测重新算。
         """
         max_step = self.config.max_step_px
         distance = math.sqrt(dx ** 2 + dy ** 2)
         if distance == 0:
             return []
 
-        # 限幅到单步最大像素
-        if distance > max_step:
-            scale = max_step / distance
+        # 动态步长倍数 (远→近递减)
+        FAR_DIST = 200.0   # 超过此距离用最大倍数
+        NEAR_DIST = 10.0   # 低于此距离用最小倍数
+        if distance >= FAR_DIST:
+            multiplier = 3.0
+        elif distance <= NEAR_DIST:
+            multiplier = 0.5
+        else:
+            t = (distance - NEAR_DIST) / (FAR_DIST - NEAR_DIST)
+            multiplier = 0.5 + t * 2.5  # 0.5 → 3.0
+
+        dynamic_step = max_step * multiplier
+
+        # 限幅到动态步长
+        if distance > dynamic_step:
+            scale = dynamic_step / distance
             dx = dx * scale
             dy = dy * scale
 
