@@ -1035,7 +1035,7 @@ class MouseForwarderBackend:
                 await self._send({
                     'type': 'trajectory_cleared',
                 })
-            
+
             elif msg_type == 'trajectory_get_points':
                 points = self.trajectory.get_trail_points()
                 await self._send({
@@ -1045,6 +1045,28 @@ class MouseForwarderBackend:
                         for p in points
                     ],
                 })
+
+            # --- 轨迹日志控制 ---
+            elif msg_type == 'trajectory_log_start':
+                self.trajectory.start_logging()
+                await self._send({'type': 'trajectory_log_status', 'enabled': True})
+
+            elif msg_type == 'trajectory_log_stop':
+                self.trajectory.stop_logging()
+                await self._send({'type': 'trajectory_log_status', 'enabled': False})
+
+            elif msg_type == 'trajectory_log_get':
+                filepath = os.path.join(os.path.dirname(__file__), '..', '..', 'trajectory_log.csv')
+                self.trajectory.save_log_csv(filepath)
+                await self._send({
+                    'type': 'trajectory_log_data',
+                    'path': filepath,
+                    'count': len(self.trajectory._log_entries),
+                })
+
+            elif msg_type == 'trajectory_log_clear':
+                self.trajectory.clear_log()
+                await self._send({'type': 'trajectory_log_status', 'msg': 'cleared'})
             
             # --- 画面显示开关 ---
             elif msg_type == 'toggle_video':

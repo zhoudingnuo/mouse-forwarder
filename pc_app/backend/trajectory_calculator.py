@@ -86,6 +86,26 @@ class TrajectoryPoint:
     is_ai: bool = True  # True=AI轨迹, False=真实鼠标轨迹
 
 
+@dataclass
+class LogEntry:
+    """单帧轨迹日志"""
+    timestamp: float          # 系统时间
+    target_cx: float          # 目标中心 X
+    target_cy: float          # 目标中心 Y
+    target_class: int         # 目标类别
+    target_confidence: float  # 目标置信度
+    error_x: float            # 距屏幕中心误差 X
+    error_y: float            # 距屏幕中心误差 Y
+    distance: float           # 误差距离
+    output_x: float           # PID 输出 X
+    output_y: float           # PID 输出 Y
+    steps: str                # 发送的步序列 (json)
+    settled: bool             # 是否已对准
+    prediction_x: float       # 预测后的瞄准点 X
+    prediction_y: float       # 预测后的瞄准点 Y
+    dt: float                 # 距上一帧的时间
+
+
 class TrajectoryCalculator:
     """
     轨迹计算器
@@ -143,6 +163,11 @@ class TrajectoryCalculator:
         # 统计
         self._trajectories_computed: int = 0
         self._targets_acquired: int = 0
+
+        # 轨迹日志
+        self._log_enabled: bool = False
+        self._log_entries: List[LogEntry] = []
+        self._last_log_time: float = 0.0
 
     def set_config(self, config: TrajectoryConfig):
         """更新配置"""
@@ -295,6 +320,30 @@ class TrajectoryCalculator:
 
         self._trajectories_computed += 1
 
+        # 记录轨迹日志
+        if self._log_enabled:
+            now = time.time()
+            dt = now - self._last_log_time if self._last_log_time > 0 else 0
+            self._last_log_time = now
+            import json
+            self._log_entries.append(LogEntry(
+                timestamp=now,
+                target_cx=target.cx,
+                target_cy=target.cy,
+                target_class=target.class_id,
+                target_confidence=target.confidence,
+                error_x=error_x,
+                error_y=error_y,
+                distance=distance,
+                output_x=output_x,
+                output_y=output_y,
+                steps=json.dumps(all_steps),
+                settled=self.is_settled,
+                prediction_x=aim_x,
+                prediction_y=aim_y,
+                dt=dt,
+            ))
+
         return all_steps
 
     def add_real_mouse_point(self, dx: int, dy: int):
@@ -340,6 +389,50 @@ class TrajectoryCalculator:
             'targets_acquired': self._targets_acquired,
             'trail_points': len(self._trail_points),
         }
+
+    # ============ 轨迹日志 ============
+
+    def start_logging(self):
+        """开始记录轨迹日志"""
+        self._log_enabled = True
+        self._log_entries.clear()
+        self._last_log_time = 0.0
+        logger.info("Trajectory logging started")
+
+    def stop_logging(self):
+        """停止记录轨迹日志"""
+        self._log_enabled = False
+        logger.info(f"Trajectory logging stopped ({len(self._log_entries)} entries)")
+
+    def get_log_csv(self) -> str:
+        """导出日志为 CSV"""
+        import io
+        buf = io.StringIO()
+        buf.write("frame,timestamp,target_cx,target_cy,target_class,confidence,"
+                  "error_x,error_y,distance,output_x,output_y,"
+                  "aim_x,aim_y,steps,settled,dt\n")
+        for i, e in enumerate(self._log_entries):
+            buf.write(
+                f"{i},{e.timestamp:.3f},{e.target_cx:.1f},{e.target_cy:.1f},"
+                f"{e.target_class},{e.target_confidence:.3f},"
+                f"{e.error_x:.1f},{e.error_y:.1f},{e.distance:.1f},"
+                f"{e.output_x:.2f},{e.output_y:.2f},"
+                f"{e.prediction_x:.1f},{e.prediction_y:.1f},"
+                f"\"{e.steps}\",{int(e.settled)},{e.dt:.4f}\n"
+            )
+        return buf.getvalue()
+
+    def save_log_csv(self, filepath: str) -> str:
+        """保存日志 CSV 到文件, 返回实际路径"""
+        csv = self.get_log_csv()
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(csv)
+        return filepath
+
+    def clear_log(self):
+        """清空日志"""
+        self._log_entries.clear()
+        self._last_log_time = 0.0
 
     # ============ 内部方法 ============
 
@@ -506,53 +599,73 @@ class TrajectoryCalculator:
 
     def _decompose_movement(self, dx: float, dy: float) -> List[Tuple[int, int]]:
         """
-        动态步长: 远距离大步快速接近, 近距离小步精确瞄准
+        动态步长方分解为多步
 
-        步长倍数:
-          - ≥200px 距离: 3x max_step_px (快速接近)
-          - ≤10px 距离:  0.5x max_step_px (精细瞄准)
-          - 中间线性插值
-        每帧只发1步, 下一帧重新检测重新算。
+        步长随距离递减: 远时 3x base, 近时 0.5x base
+        每步间隔 1ms, 在帧空闲时间 (~6ms) 内尽量多发。
+        base = max_step_px (默认 10)
         """
         max_step = self.config.max_step_px
         distance = math.sqrt(dx ** 2 + dy ** 2)
         if distance == 0:
             return []
 
-        # 动态步长倍数 (检测范围仅128px, 所以100px就算"远")
-        FAR_DIST = 100.0   # ≥100px 用最大倍数
-        NEAR_DIST = 5.0    # ≤5px 用最小倍数
+        # 动态步长倍数
+        FAR_DIST = 100.0
+        NEAR_DIST = 5.0
         if distance >= FAR_DIST:
             multiplier = 3.0
         elif distance <= NEAR_DIST:
             multiplier = 0.5
         else:
             t = (distance - NEAR_DIST) / (FAR_DIST - NEAR_DIST)
-            multiplier = 0.5 + t * 2.5  # 0.5 → 3.0
+            multiplier = 0.5 + t * 2.5
 
-        dynamic_step = max_step * multiplier
+        step_size = max_step * multiplier
 
-        # 限幅到动态步长
-        if distance > dynamic_step:
-            scale = dynamic_step / distance
-            dx = dx * scale
-            dy = dy * scale
+        # 归一化方向
+        norm_x = dx / distance
+        norm_y = dy / distance
 
-        # 添加随机抖动 (反检测)
         jitter = self.config.jitter_amount
-        near_factor = min(1.0, distance / 50.0)
-        jx = random.uniform(-jitter, jitter) * near_factor
-        jy = random.uniform(-jitter, jitter) * near_factor
-        sdx = dx + jx
-        sdy = dy + jy
+        steps = []
+        remaining = distance
 
-        # 舍入为整数
-        sdx_int = max(-127, min(127, int(round(sdx))))
-        sdy_int = max(-127, min(127, int(round(sdy))))
+        while remaining > 0:
+            # 当前步长: 越靠近越小
+            if remaining >= FAR_DIST:
+                m = 3.0
+            elif remaining <= NEAR_DIST:
+                m = 0.5
+            else:
+                t = (remaining - NEAR_DIST) / (FAR_DIST - NEAR_DIST)
+                m = 0.5 + t * 2.5
+            cur_step = max_step * m
 
-        if sdx_int == 0 and sdy_int == 0:
-            return []
-        return [(sdx_int, sdy_int)]
+            # 最后一步不超过剩余距离
+            if cur_step > remaining:
+                cur_step = remaining
+
+            # 方向分量
+            sdx = norm_x * cur_step
+            sdy = norm_y * cur_step
+
+            # 抖动 (靠近目标时衰减)
+            near_factor = min(1.0, remaining / 50.0)
+            jx = random.uniform(-jitter, jitter) * near_factor
+            jy = random.uniform(-jitter, jitter) * near_factor
+
+            sdx_int = max(-127, min(127, int(round(sdx + jx))))
+            sdy_int = max(-127, min(127, int(round(sdy + jy))))
+
+            if sdx_int != 0 or sdy_int != 0:
+                steps.append((sdx_int, sdy_int))
+
+            remaining -= cur_step
+            if len(steps) >= 20:  # 安全上限, 避免死循环
+                break
+
+        return steps
 
     def _add_trail_point(self, x: float, y: float):
         """添加轨迹点并裁剪"""
