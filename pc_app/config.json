@@ -9,7 +9,7 @@
     "jitter_amount": 0.0,
     "target_priority": -1,
     "prediction_ticks": 1,
-    "fov_radius": 120,
+    "fov_radius": 80,
     "trigger_enabled": true,
     "trigger_threshold": 32,
     "invert_ai_x": false,

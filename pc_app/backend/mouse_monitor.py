@@ -35,8 +35,8 @@ BUTTON_BITS = {
     mouse.Button.left:   1,
     mouse.Button.right:  2,
     mouse.Button.middle: 4,
-    mouse.Button.x1:     16,  # 后退键 (bit4)
-    mouse.Button.x2:     32,  # 前进键 (bit5)
+    mouse.Button.x1:     8,   # 后退键 (bit3 = Button 4)
+    mouse.Button.x2:     16,  # 前进键 (bit4 = Button 5)
 }
 
 
@@ -215,8 +215,8 @@ class MouseMonitor:
                     left=bool(self._buttons_state & 1),
                     right=bool(self._buttons_state & 2),
                     middle=bool(self._buttons_state & 4),
-                    back=bool(self._buttons_state & 16),
-                    forward=bool(self._buttons_state & 32),
+                    back=bool(self._buttons_state & 8),
+                    forward=bool(self._buttons_state & 16),
                 )
                 self._emit_event(event)
         
@@ -230,12 +230,15 @@ class MouseMonitor:
 
         bit = BUTTON_BITS.get(button, 0)
         if bit == 0:
+            logger.info(f"[BTN_UNKNOWN] button={button} pressed={pressed}")
             return  # 不支持的按钮
 
         if pressed:
             self._buttons_state |= bit
         else:
             self._buttons_state &= ~bit
+
+        logger.info(f"[BTN] {button} {'press' if pressed else 'release'} bit={bit} state={self._buttons_state}")
 
         event = MouseEvent(
             buttons=self._buttons_state,
