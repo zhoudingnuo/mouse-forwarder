@@ -90,6 +90,9 @@ class TinyNN:
         if not np.all(np.isfinite(z3)):
             z3 = np.zeros_like(z3)
 
+        # 强制 Y 轴输出为 0 (只练 X 轴)
+        z3[1] = 0.0
+
         self._cache = {'x': x, 'z1': z1, 'z2': z2, 'z3': z3}
         return z3  # 输出 (dx, dy)
 
@@ -131,16 +134,8 @@ class TinyNN:
                 # 方向正确 → 轻微增强 (每帧最多 0.3%)
                 target[0] = output_x * min(1.003, 1.0 + abs(error_x) / 2000.0)
 
-        # Y 轴同理 (带 y_scale 限制)
-        if abs(x[1]) > 2.0:
-            sign_err_y = 1.0 if x[1] > 0 else -1.0
-            sign_out_y = 1.0 if output[1] > 0 else -1.0 if output[1] < 0 else 0.0
-            if sign_out_y == 0:
-                target[1] = sign_err_y * min(self.max_step_px, max(1.0, abs(x[1]) * 0.08)) * self.y_scale
-            elif sign_out_y != sign_err_y:
-                target[1] = sign_err_y * abs(output[1]) * 0.8
-            else:
-                target[1] = output[1] * min(1.003, 1.0 + abs(x[1]) / 2000.0)
+        # Y 轴保持零输出 (只练 X 轴左右跟随, 降低难度)
+        target[1] = 0.0
 
         # 限制目标变化幅度
         delta = target - output
