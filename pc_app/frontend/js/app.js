@@ -586,6 +586,11 @@
         ws.on('detection_frame', (data) => {
             capturePanel.onDetectionFrame(data);
             if (mousePanel) mousePanel.updateDetectionFrame(data);
+            // 显示 NN 训练状态到日志面板 (仅在状态更新时)
+            if (data.trajectory_stats?.nn_status && data.trajectory_stats.nn_status !== state._last_nn_status) {
+                state._last_nn_status = data.trajectory_stats.nn_status;
+                settings.addLog(data.trajectory_stats.nn_status, 'info');
+            }
         });
 
         // 画面显示开关

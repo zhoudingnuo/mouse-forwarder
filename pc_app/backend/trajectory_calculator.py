@@ -426,11 +426,16 @@ class TrajectoryCalculator:
 
     def get_stats(self) -> dict:
         """获取统计信息"""
-        return {
+        stats = {
             'trajectories_computed': self._trajectories_computed,
             'targets_acquired': self._targets_acquired,
             'trail_points': len(self._trail_points),
         }
+        if self._nn and self.config.nn_mode:
+            nn_stats = self._nn.get_stats()
+            stats['nn'] = nn_stats
+            stats['nn_status'] = nn_stats.get('last_status', '')
+        return stats
 
     # ============ 轨迹日志 ============
 

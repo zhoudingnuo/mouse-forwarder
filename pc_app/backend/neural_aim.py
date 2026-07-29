@@ -64,6 +64,7 @@ class TinyNN:
         # 训练缓存
         self._buffer: deque = deque(maxlen=64)
         self._train_count = 0
+        self._last_status: str = ''
 
         # 从上一次推理保存的中间值 (用于反向传播)
         self._cache = {}
@@ -169,14 +170,16 @@ class TinyNN:
         self._train_count += 1
         self._buffer.append((abs(error_delta), intensity))
 
-        # 每 30 帧打印训练过程
+        # 每 30 帧记录训练状态 (由前端拉取显示)
         if self._train_count % 30 == 0:
             avg_delta = np.mean([d for d, _ in self._buffer[-30:]])
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
-            print(f'[NN] train={self._train_count} err_delta={avg_delta:.2f} '
-                  f'|W1|={w1_mean:.3f} |W3|={w3_mean:.3f} lr={self.lr:.4f} '
-                  f'output=({output[0]:.2f},{output[1]:.2f})')
+            self._last_status = (f'[NN] train={self._train_count} '
+                                 f'err_delta={avg_delta:.2f} '
+                                 f'|W1|={w1_mean:.3f} |W3|={w3_mean:.3f} '
+                                 f'output=({output[0]:.2f},{output[1]:.2f})')
+            logger.info(self._last_status)
 
     def get_stats(self) -> dict:
         """获取训练统计"""
@@ -185,6 +188,7 @@ class TinyNN:
             'train_steps': self._train_count,
             'buffer_size': len(self._buffer),
             'avg_error_delta': round(avg_delta, 3),
+            'last_status': self._last_status,
         }
 
     def save(self, path: str):
