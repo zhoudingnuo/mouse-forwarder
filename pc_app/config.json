@@ -2,26 +2,27 @@
   "trajectory": {
     "enabled": true,
     "smooth_factor": 0.35,
-    "max_step_px": 7,
+    "max_step_px": 10,
     "min_confidence": 0.65,
     "target_offset_x": 0,
     "target_offset_y": -34,
     "jitter_amount": 0.0,
     "target_priority": -1,
-    "prediction_ticks": 1,
+    "prediction_ticks": 0,
     "fov_radius": 80,
-    "trigger_enabled": true,
-    "trigger_threshold": 32,
+    "trigger_enabled": false,
+    "trigger_threshold": 4,
     "invert_ai_x": false,
     "invert_ai_y": false,
-    "kp": 0.2,
+    "kp": 0.15,
     "ki": 0.0,
-    "kd": 0.11,
+    "kd": 0.07,
     "integral_limit": 100.0,
-    "max_steps_per_frame": 35,
-    "settle_deadzone": 6.0,
-    "unsettle_hysteresis": 12.0,
-    "y_scale": 0.2
+    "max_steps_per_frame": 80,
+    "settle_deadzone": 1.0,
+    "unsettle_hysteresis": 1.0,
+    "y_scale": 0.6,
+    "velocity_ff": 0.0
   },
   "video": {
     "show_video": true
@@ -31,6 +32,6 @@
     "target_h": 1440
   },
   "model": {
-    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\best.onnx"
+    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\valorant.onnx"
   }
 }
