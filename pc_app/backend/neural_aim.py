@@ -171,8 +171,8 @@ class TinyNN:
 
         self._train_count += 1
 
-        # 输出增益: 随训练步数从 0.1 线性增至 1.0 (约 10000 步后到 1)
-        self._gain = min(1.0, 0.1 + 0.9 * self._train_count / 10000)
+        # 输出增益: 随训练步数从 0.1 线性增至 1.0 (约 10w 步后到 1)
+        self._gain = min(1.0, 0.1 + 0.9 * self._train_count / 100000)
 
         # 每 30 帧记录训练统计 (由 get_stats 返回)
         if self._train_count % 30 == 0:
