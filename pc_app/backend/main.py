@@ -144,6 +144,9 @@ class MouseForwarderBackend:
         self._mouse_queue = queue.Queue(maxsize=200)
         self._mouse_thread = threading.Thread(target=self._mouse_forward_loop, daemon=True)
         self._mouse_thread.start()
+        self._ai_dx = 0  # 待叠加的 AI 轨迹 X 位移
+        self._ai_dy = 0  # 待叠加的 AI 轨迹 Y 位移
+        self._ai_time = 0.0  # 上次 AI 更新时间
 
         # 检测管道任务
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -545,16 +548,13 @@ class MouseForwarderBackend:
                 # 自动扳机检测: 如果目标在屏幕中心阈值范围内, 自动按下鼠标左键
                 await self._check_auto_trigger(detections)
 
-		                # 发送 AI 轨迹到串口 (仅当轨迹启用且物理按钮未按下时)
-		                if ai_steps and self.serial.is_connected:
-		                    # 物理按钮按下时不发 AI 轨迹, 避免按钮状态被覆盖导致拖拽变单击
-		                    if self.mouse._buttons_state == 0:
-		                        for dx, dy in ai_steps:
-		                            packet = encode_packet(0, dx, dy, 0)
-		                            await self.serial.send(packet)
-		                            self.stats['trajectory_events'] += 1
-		                            self.stats['packets_sent'] += 1
-		                            self.stats['bytes_sent'] += len(packet)
+                # AI 轨迹叠加到物理鼠标 (累积到 _ai_dx/_ai_dy, 由下次物理事件携带)
+                if ai_steps and self._trajectory_enabled:
+                    total_dx = sum(dx for dx, dy in ai_steps)
+                    total_dy = sum(dy for dx, dy in ai_steps)
+                    self._ai_dx += total_dx
+                    self._ai_dy += total_dy
+                    self._ai_time = time.time()
                 
                 # 发送检测结果到前端 (限频, 避免带宽过高)
                 now = time.time()
@@ -1046,15 +1046,23 @@ class MouseForwarderBackend:
     # ================================================================
     
     def _on_mouse_event(self, event: MouseEvent):
-        """鼠标事件回调 (放入队列, 由转发线程写入串口)"""
+        """鼠标事件回调 (叠加 AI 轨迹后放入队列)"""
         self.stats['mouse_events'] += 1
 
         # 过滤 SetCursorPos 回弹事件 (单次位移超过 200px 的直接丢弃)
         if abs(event.dx) > 200 or abs(event.dy) > 200:
             return
 
+        # 叠加 AI 轨迹到物理鼠标 (按钮状态由物理事件携带)
+        ai_dx = self._ai_dx
+        ai_dy = self._ai_dy
+        self._ai_dx = 0
+        self._ai_dy = 0
+        comb_dx = event.dx + ai_dx
+        comb_dy = event.dy + ai_dy
+
         # 放入队列, 由转发线程写入串口 (不阻塞 pynput 回调)
-        packet = encode_packet(event.buttons, event.dx, event.dy, event.wheel)
+        packet = encode_packet(event.buttons, comb_dx, comb_dy, event.wheel)
         try:
             self._mouse_queue.put_nowait(packet)
             self.stats['packets_sent'] += 1

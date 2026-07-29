@@ -2,7 +2,7 @@
   "trajectory": {
     "enabled": true,
     "smooth_factor": 0.35,
-    "max_step_px": 21,
+    "max_step_px": 30,
     "min_confidence": 0.65,
     "target_offset_x": 0,
     "target_offset_y": -34,
