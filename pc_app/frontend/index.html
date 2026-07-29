@@ -260,21 +260,21 @@
                     <label>每帧最大步数 <span id="lbl-maxsteps">30</span></label>
                     <input type="range" id="slider-maxsteps" min="5" max="80" step="5" value="30">
                 </div>
-                <div class="form-group">
-                    <label>死区 <span id="lbl-deadzone">8</span>px</label>
-                    <input type="range" id="slider-deadzone" min="2" max="30" step="1" value="8">
-                    <div class="hint-text">目标在此范围内停止移动</div>
-                </div>
-                <div class="form-group">
-                    <label>滞回 <span id="lbl-hysteresis">20</span>px</label>
-                    <input type="range" id="slider-hysteresis" min="5" max="60" step="1" value="20">
-                    <div class="hint-text">超出此范围才重新开始瞄准 (防抖)</div>
-                </div>
-                <div class="form-group">
-                    <label>Y轴幅度 <span id="lbl-yscale">0.20</span></label>
-                    <input type="range" id="slider-yscale" min="0.05" max="1.00" step="0.05" value="0.20">
-                    <div class="hint-text">Y轴移动幅度比例 (0.2=防抖, 1.0=全幅)</div>
-                </div>
+	                <div class="form-group">
+	                    <label>死区 <span id="lbl-deadzone">3</span>px</label>
+	                    <input type="range" id="slider-deadzone" min="1" max="30" step="1" value="3">
+	                    <div class="hint-text">目标在此范围内停止移动 (最小1px)</div>
+	                </div>
+	                <div class="form-group">
+	                    <label>滞回 <span id="lbl-hysteresis">5</span>px</label>
+	                    <input type="range" id="slider-hysteresis" min="1" max="60" step="1" value="5">
+	                    <div class="hint-text">超出此范围才重新开始瞄准 (防抖)</div>
+	                </div>
+	                <div class="form-group">
+	                    <label>Y轴幅度 <span id="lbl-yscale">0.60</span></label>
+	                    <input type="range" id="slider-yscale" min="0.05" max="1.00" step="0.05" value="0.60">
+	                    <div class="hint-text">Y轴移动幅度比例 (0.2=防抖, 1.0=全幅)</div>
+	                </div>
             </div>
 
             <!-- 自动扳机 -->

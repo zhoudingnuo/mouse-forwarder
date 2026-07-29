@@ -2,7 +2,7 @@
 object_detector.py - 目标检测模块
 
 模型: valorant.onnx (YOLO11s, 256×256 输入, 5 类)
-预处理: 中心裁剪 640×640 → resize 到 256×256 + /255 归一化
+预处理: 中心裁剪 256×256 (不 resize)
 后处理: 置信度阈值 0.25, NMS IoU 0.45
 """
 
@@ -20,14 +20,13 @@ logger = logging.getLogger(__name__)
 
 
 class ObjectDetector:
-    """目标检测器 (valorant.onnx, center crop 640→256)"""
+    """目标检测器 (valorant.onnx, center crop 256×256)"""
 
     CONFIDENCE_THRESHOLD = 0.25
     NMS_IOU_THRESHOLD = 0.45
     MAX_DETECTIONS = 50
 
-    INPUT_SIZE = 256          # 模型输入尺寸
-    CROP_SIZE = 640           # 中心裁剪尺寸
+    INPUT_SIZE = 256          # 模型输入尺寸 = 裁剪尺寸
     MODEL_PATH = 'valorant.onnx'
 
     # 类别名称 (valorant.onnx metadata: body, head, teammate, breakable, dodge)
@@ -39,7 +38,7 @@ class ObjectDetector:
         self._loaded = False
         self._inference_time = 0.0
         self._inference_count = 0
-        self._crop_offset = (0, 0)  # 中心裁剪偏移
+        self._crop_offset = (0, 0)
 
     @property
     def is_loaded(self) -> bool:
@@ -56,113 +55,89 @@ class ObjectDetector:
         return (self._inference_time / self._inference_count) * 1000
 
     def load_model(self, model_path: str):
-        """加载 ONNX 模型"""
         ext = os.path.splitext(model_path)[1].lower()
         logger.info(f"Loading model: {model_path}")
 
         if ext == '.onnx':
             self._load_onnx(model_path)
         else:
-            raise ValueError(f"Unsupported model format: {ext} (only .onnx supported)")
+            raise ValueError(f"Unsupported model format: {ext}")
 
         self._model_path = model_path
         self._loaded = True
         logger.info(f"Model loaded ({model_path})")
 
     def _load_onnx(self, model_path: str):
-        """加载 ONNX 模型"""
         import onnxruntime
-
         available = onnxruntime.get_available_providers()
         preferred = ['DmlExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
         providers = [p for p in preferred if p in available]
-
-        self._session = onnxruntime.InferenceSession(model_path, providers=providers)
-
+        opts = onnxruntime.SessionOptions()
+        opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        opts.execution_mode = onnxruntime.ExecutionMode.ORT_PARALLEL
+        self._session = onnxruntime.InferenceSession(model_path, opts, providers=providers)
         for inp in self._session.get_inputs():
             logger.info(f"  Input: {inp.name} -> {inp.shape}")
         for out in self._session.get_outputs():
             logger.info(f"  Output: {out.name} -> {out.shape}")
 
     def detect(self, frame: np.ndarray, original_shape: Optional[tuple] = None) -> List[Detection]:
-        """
-        对帧进行目标检测
-
-        Args:
-            frame: 输入帧 (BGR, HWC)
-            original_shape: 原始帧尺寸 (H, W), 用于坐标映射
-
-        Returns:
-            检测结果列表 (trajectory_calculator.Detection)
-        """
         if not self._loaded:
             return []
-
         t_start = time.perf_counter()
         detections = self._detect_onnx(frame, original_shape)
-
         self._inference_time += time.perf_counter() - t_start
         self._inference_count += 1
-
         return detections
 
     def _detect_onnx(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
-        """ONNX 模型推理 (中心裁剪 640→256 + /255 归一化)"""
+        """ONNX 推理: 中心裁剪 256×256 (不 resize)"""
         orig_h, orig_w = original_shape or frame.shape[:2]
+        SZ = self.INPUT_SIZE
 
-        # 中心裁剪 640×640
+        # 中心裁剪 256×256
         cx, cy = orig_w // 2, orig_h // 2
-        half = self.CROP_SIZE // 2
+        half = SZ // 2
         x1 = max(0, cx - half)
         y1 = max(0, cy - half)
-        x2 = x1 + self.CROP_SIZE
-        y2 = y1 + self.CROP_SIZE
-        crop = frame[y1:y2, x1:x2]  # [640, 640, 3] BGR
+        x2 = min(orig_w, x1 + SZ)
+        y2 = min(orig_h, y1 + SZ)
+        crop = frame[y1:y2, x1:x2]
+        # 补齐边缘 (如果画面边缘不足 256)
+        ch, cw = crop.shape[:2]
+        if ch != SZ or cw != SZ:
+            crop = cv2.copyMakeBorder(crop, 0, SZ - ch, 0, SZ - cw,
+                                       cv2.BORDER_CONSTANT, value=(0, 0, 0))
         self._crop_offset = (x1, y1)
 
-        # resize 到 256×256 + BGR→RGB + /255
-        img_rgb = np.empty((self.INPUT_SIZE, self.INPUT_SIZE, 3), dtype=np.float32)
-        # cv2.resize 输出 BGR, 手动转 RGB
-        resized = cv2.resize(crop, (self.INPUT_SIZE, self.INPUT_SIZE))
-        # BGR→RGB + /255 归一化
-        scale = np.float32(1.0 / 255.0)
-        img_rgb[:, :, 0] = resized[:, :, 2] * scale  # R
-        img_rgb[:, :, 1] = resized[:, :, 1] * scale  # G
-        img_rgb[:, :, 2] = resized[:, :, 0] * scale  # B
-
-        # NCHW
-        input_tensor = np.expand_dims(np.transpose(img_rgb, (2, 0, 1)), axis=0).astype(np.float32)
+        # BGR→RGB + /255, 无需 resize
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        input_tensor = np.expand_dims(np.transpose(rgb, (2, 0, 1)), axis=0).astype(np.float32)
 
         # 推理
         outputs = self._session.run(['output0'], {'images': input_tensor})
         output = np.squeeze(outputs[0], axis=0)  # [9, 1344]
 
-        # 解析
+        # 解析: ch0-3 bbox, ch4-8 cls(已sigmoid)
         cx = output[0, :]; cy = output[1, :]
         w = output[2, :]; h = output[3, :]
-        # class scores (已 sigmoid)
         cls_scores = output[4:9, :]  # [5, 1344]
+        conf = np.max(cls_scores, axis=0)
+        cls_ids = np.argmax(cls_scores, axis=0)
 
-        conf = np.max(cls_scores, axis=0)  # [1344]
-        cls_ids = np.argmax(cls_scores, axis=0)  # [1344]
-
-        # 置信度过滤
         mask = conf >= self.CONFIDENCE_THRESHOLD
         if not np.any(mask):
             return []
 
         cx, cy, w, h = cx[mask], cy[mask], w[mask], h[mask]
-        conf = conf[mask]
-        cls_ids = cls_ids[mask]
+        conf = conf[mask]; cls_ids = cls_ids[mask]
 
-        # 模型输出坐标在 256×256 空间 → 映射到 640×640 裁剪空间 → 映射到原图
+        # 坐标映射: 256 空间 → 原图 (1:1, 无缩放)
         off_x, off_y = self._crop_offset
-        scale_640_256 = self.CROP_SIZE / self.INPUT_SIZE  # 640/256 = 2.5
-
-        cx_img = cx * scale_640_256 + off_x
-        cy_img = cy * scale_640_256 + off_y
-        w_img = w * scale_640_256
-        h_img = h * scale_640_256
+        cx_img = cx + off_x
+        cy_img = cy + off_y
+        # w, h 在 256 空间 = 像素尺寸 (1:1 mapping)
+        w_img = w; h_img = h
 
         x1 = (cx_img - w_img / 2).clip(0, orig_w)
         y1 = (cy_img - h_img / 2).clip(0, orig_h)
@@ -189,22 +164,18 @@ class ObjectDetector:
             if len(keep) >= self.MAX_DETECTIONS:
                 break
 
-        detections = []
-        for i in keep:
-            detections.append(Detection.from_bbox(
-                x=float(x1[i]), y=float(y1[i]),
-                w=float(x2[i] - x1[i]), h=float(y2[i] - y1[i]),
-                confidence=float(conf[i]),
-                class_id=int(cls_ids[i]),
-            ))
+        detections = [Detection.from_bbox(
+            x=float(x1[i]), y=float(y1[i]),
+            w=float(x2[i] - x1[i]), h=float(y2[i] - y1[i]),
+            confidence=float(conf[i]), class_id=int(cls_ids[i]),
+        ) for i in keep]
 
         detections.sort(key=lambda d: d.confidence, reverse=True)
 
-        # 每 30 帧打印耗时
         if not hasattr(self, '_debug_count'):
             self._debug_count = 0
         self._debug_count += 1
-        if self._debug_count % 30 == 0 and conf.size > 0:
-            print(f'[TIMING] infer: {self.avg_inference_time_ms:.1f}ms | dets={len(detections)} | conf={self.CONFIDENCE_THRESHOLD:.2f}')
+        if self._debug_count % 30 == 0:
+            print(f'[TIMING] infer: {self.avg_inference_time_ms:.1f}ms | dets={len(detections)}')
 
         return detections[:self.MAX_DETECTIONS]

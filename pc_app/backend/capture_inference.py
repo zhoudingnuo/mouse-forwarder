@@ -308,18 +308,23 @@ class CaptureInferenceEngine:
         """
         预处理帧用于模型推理
 
-        中心裁剪 640×640 → resize 到 256×256 + /255 归一化
+        中心裁剪 256×256 (不 resize), BGR→RGB + /255
         返回 (input_tensor, crop_offset)
         """
         h, w = frame.shape[:2]
         cx, cy = w // 2, h // 2
-        half = CROP_SIZE // 2
+        half = INPUT_SIZE // 2
         x1 = max(0, cx - half)
         y1 = max(0, cy - half)
-        crop = frame[y1:y1 + CROP_SIZE, x1:x1 + CROP_SIZE]
-
-        resized = cv2.resize(crop, (INPUT_SIZE, INPUT_SIZE))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        x2 = min(w, x1 + INPUT_SIZE)
+        y2 = min(h, y1 + INPUT_SIZE)
+        crop = frame[y1:y2, x1:x2]
+        # 补齐边缘
+        ch, cw = crop.shape[:2]
+        if ch != INPUT_SIZE or cw != INPUT_SIZE:
+            crop = cv2.copyMakeBorder(crop, 0, INPUT_SIZE - ch, 0, INPUT_SIZE - cw,
+                                       cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         chw = np.expand_dims(np.transpose(rgb, (2, 0, 1)), axis=0).astype(np.float32)
         return chw, (x1, y1)
 
@@ -334,7 +339,7 @@ class CaptureInferenceEngine:
         后处理 YOLO 输出
 
         Args:
-            output: [1, 9, 1344] - YOLO 原始输出 (ch0-3 bbox, ch4-8 cls 已 sigmoid)
+            output: [1, 9, 1344] - YOLO 原始输出
             frame_h: 原始帧高度
             frame_w: 原始帧宽度
             crop_offset: (x1, y1) 裁剪偏移
@@ -346,12 +351,11 @@ class CaptureInferenceEngine:
         pred = np.squeeze(output, axis=0)  # [9, 1344]
         pred = pred.T  # [1344, 9]
 
-        # bbox: 模型输出在 256×256 空间 → 640×640 裁剪空间 → 原图
-        scale_crop = CROP_SIZE / INPUT_SIZE  # 2.5
-        cx = pred[:, 0] * scale_crop + off_x
-        cy = pred[:, 1] * scale_crop + off_y
-        w = pred[:, 2] * scale_crop
-        h = pred[:, 3] * scale_crop
+        # 1:1 映射: 256 空间坐标 = 像素坐标 (无 resize)
+        cx = pred[:, 0] + off_x
+        cy = pred[:, 1] + off_y
+        w = pred[:, 2]  # 像素尺寸
+        h = pred[:, 3]
 
         x1 = (cx - w / 2).clip(0, frame_w)
         y1 = (cy - h / 2).clip(0, frame_h)
@@ -672,9 +676,9 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
         # 圆圈
         cv2.circle(frame, (ax, ay), crosshair_size, crosshair_color, 1)
 
-    # 绘制推理区域 (中心 640×640 裁剪框, 绿色边框)
+    # 绘制推理区域 (中心 256×256 裁剪框, 绿色边框)
     fh, fw = frame.shape[:2]
-    s = 640
+    s = 256
     if fw >= s and fh >= s:
         rx1 = fw // 2 - s // 2
         ry1 = fh // 2 - s // 2
