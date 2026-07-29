@@ -276,11 +276,6 @@ class TrajectoryCalculator:
         output_x = kp * error_x + ki * self._integral_x + kd * deriv_x
         output_y = (kp * error_y + ki * self._integral_y + kd * deriv_y) * self.config.y_scale
 
-        # 输出死区: 总输出小于 3px 时不发任何步数
-        output_dist = math.sqrt(output_x ** 2 + output_y ** 2)
-        if output_dist < 3.0:
-            return []
-
         # 应用符号反转
         if self.config.invert_ai_x:
             output_x = -output_x
