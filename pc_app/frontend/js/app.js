@@ -21,6 +21,7 @@
 	        lockMode: false,
 	        triggerEnabled: true,
 	        nnMode: false,
+	        _last_nn_status: '',
     };
 
     /**
@@ -586,10 +587,9 @@
         ws.on('detection_frame', (data) => {
             capturePanel.onDetectionFrame(data);
             if (mousePanel) mousePanel.updateDetectionFrame(data);
-            // 瞄准日志: NN 输入输出 (每帧)
-            if (data.trajectory_stats?.nn_io) {
-                settings.addAimLog(data.trajectory_stats.nn_io);
-            } else if (data.trajectory_stats?.nn_status) {
+            // 瞄准日志: 只打印模型性能状态 (每30帧更新一次)
+            if (data.trajectory_stats?.nn_status && data.trajectory_stats.nn_status !== state._last_nn_status) {
+                state._last_nn_status = data.trajectory_stats.nn_status;
                 settings.addAimLog(data.trajectory_stats.nn_status);
             }
         });
