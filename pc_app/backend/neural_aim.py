@@ -39,7 +39,7 @@ class TinyNN:
         self.W2[0, 1] = 0.2
         self.b2 = np.zeros(4)
 
-        self.W3 = np.array([[0.5], [0.3], [0.0], [0.0]])  # [4,1]
+        self.W3 = np.array([0.5, 0.3, 0.0, 0.0])  # [4] → 标量输出
         self.b3 = np.array([0.0])
 
         # 训练状态
@@ -123,7 +123,7 @@ class TinyNN:
         dL_dW3 = a2 * dL_dz3  # [4]
         dL_db3 = dL_dz3
 
-        dL_da2 = self.W3[:, 0] * dL_dz3  # [4]
+        dL_da2 = self.W3 * dL_dz3  # [4]
         dL_dz2 = dL_da2 * (a2 > 0).astype(float)  # ReLU
         dL_dW2 = np.outer(a1, dL_dz2)  # [4,4]
         dL_db2 = dL_dz2  # [4]
