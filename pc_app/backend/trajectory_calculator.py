@@ -312,7 +312,7 @@ class TrajectoryCalculator:
             # 神经网络模式
             if self._nn is None:
                 from neural_aim import TinyNN
-                self._nn = TinyNN(lr=self.config.nn_lr)
+                self._nn = TinyNN(lr=self.config.nn_lr, y_scale=self.config.y_scale)
                 logger.info("Neural network controller initialized")
 
             # 估计目标速度

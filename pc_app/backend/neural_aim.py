@@ -31,16 +31,34 @@ class TinyNN:
     权重存在 numpy 数组中, 手动实现前向和反向传播。
     """
 
-    def __init__(self, lr: float = 0.001):
+    def __init__(self, lr: float = 0.001, y_scale: float = 0.3):
         # 网络结构: 4 → 8 → 8 → 2
+        # 输入: [error_x, error_y, vel_x, vel_y]
+        # 输出: [dx, dy]
         self.lr = lr
+        self.y_scale = y_scale
 
-        # He 初始化
-        self.W1 = np.random.randn(4, 8) * np.sqrt(2.0 / 4)
-        self.b1 = np.zeros(8)
-        self.W2 = np.random.randn(8, 8) * np.sqrt(2.0 / 8)
+        # P型初始化: 初始行为 ≈ PID, 在线学习逐步优化
+        # W1: error_x 走前4个神经元, error_y 走后4个
+        self.W1 = np.zeros((4, 8))
+        self.W1[0, 0:4] = 1.0  # error_x → hidden 0-3
+        self.W1[1, 4:8] = 1.0  # error_y → hidden 4-7
+        self.W1[2, 2] = 0.5  # vel_x 少量输入
+        self.W1[3, 6] = 0.5  # vel_y 少量输入
+        self.b1 = np.ones(8) * 0.1  # 小偏置保持 ReLU 激活
+
+        # W2: 部分交叉混合
+        self.W2 = np.eye(8) * 0.5
+        self.W2[0, 4] = 0.2  # 少量 x→y 交叉
+        self.W2[4, 0] = 0.2  # 少量 y→x 交叉
         self.b2 = np.zeros(8)
-        self.W3 = np.random.randn(8, 2) * np.sqrt(2.0 / 8)
+
+        # W3: 映射到输出, 初始 dx ≈ 0.3*error_x, dy ≈ 0.3*y_scale*error_y
+        self.W3 = np.zeros((8, 2))
+        self.W3[0, 0] = 0.3   # dx
+        self.W3[1, 0] = 0.2
+        self.W3[4, 1] = 0.3 * y_scale  # dy (带 y_scale 限制)
+        self.W3[5, 1] = 0.2 * y_scale
         self.b3 = np.zeros(2)
 
         # 训练缓存
