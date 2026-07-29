@@ -11,7 +11,7 @@
     "prediction_ticks": 1,
     "fov_radius": 120,
     "trigger_enabled": true,
-    "trigger_threshold": 50,
+    "trigger_threshold": 32,
     "invert_ai_x": false,
     "invert_ai_y": false,
     "kp": 0.2,

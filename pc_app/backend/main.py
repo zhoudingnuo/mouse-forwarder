@@ -639,16 +639,12 @@ class MouseForwarderBackend:
         # 射速限制: 距离上次开枪不足 0.5s 则不触发
         now = time.time()
         if in_range and now - self._trigger_last_fire >= 0.5:
-            # 开枪
-            await self._fire_trigger(True, target_dist)
-            self._trigger_last_fire = now
-            # 50ms 后自动释放
-            self._trigger_armed = True
-            self._trigger_release_time = now + 0.05
-        elif not in_range and self._trigger_armed and now >= self._trigger_release_time:
-            # 释放左键
-            await self._fire_trigger(False, target_dist)
-            self._trigger_armed = False
+                # 开枪: press + release 连续发送, _trigger_armed 只在两包之间短暂置位
+                self._trigger_armed = True
+                await self._fire_trigger(True, target_dist)
+                self._trigger_last_fire = now
+                await self._fire_trigger(False, target_dist)
+                self._trigger_armed = False
 
     async def _fire_trigger(self, pressed: bool, target_dist: float = -1):
         """
