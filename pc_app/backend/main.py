@@ -144,9 +144,6 @@ class MouseForwarderBackend:
         self._mouse_queue = queue.Queue(maxsize=200)
         self._mouse_thread = threading.Thread(target=self._mouse_forward_loop, daemon=True)
         self._mouse_thread.start()
-        self._ai_dx = 0  # 待叠加的 AI 轨迹 X 位移
-        self._ai_dy = 0  # 待叠加的 AI 轨迹 Y 位移
-        self._ai_time = 0.0  # 上次 AI 更新时间
 
         # 检测管道任务
         self._pipeline_task: Optional[asyncio.Task] = None
@@ -545,16 +542,20 @@ class MouseForwarderBackend:
                 # 计算轨迹
                 ai_steps = self.trajectory.calculate(detections) if self._trajectory_enabled else []
 
-                # 自动扳机检测: 如果目标在屏幕中心阈值范围内, 自动按下鼠标左键
+                # 自动扳机检测
                 await self._check_auto_trigger(detections)
 
-                # AI 轨迹叠加到物理鼠标 (累积到 _ai_dx/_ai_dy, 由下次物理事件携带)
-                if ai_steps and self._trajectory_enabled:
-                    total_dx = sum(dx for dx, dy in ai_steps)
-                    total_dy = sum(dy for dx, dy in ai_steps)
-                    self._ai_dx += total_dx
-                    self._ai_dy += total_dy
-                    self._ai_time = time.time()
+                # AI 轨迹独立发送 (携带当前物理+扳机按钮状态)
+                if ai_steps and self._trajectory_enabled and self.serial.is_connected:
+                    btns = self.mouse._buttons_state
+                    if self._trigger_armed:
+                        btns |= 1  # 扳机按下左键
+                    for dx, dy in ai_steps:
+                        packet = encode_packet(btns, dx, dy, 0)
+                        await self.serial.send(packet)
+                        self.stats['trajectory_events'] += 1
+                        self.stats['packets_sent'] += 1
+                        self.stats['bytes_sent'] += len(packet)
                 
                 # 发送检测结果到前端 (限频, 避免带宽过高)
                 now = time.time()
@@ -629,22 +630,21 @@ class MouseForwarderBackend:
         """
         发送扳机事件 (鼠标左键按下/释放)
 
-        通过鼠标队列发送 (与物理鼠标事件共用同一通道), 避免串口竞争。
+        直接写串口 (不经过队列, 确保最高优先级)。
         """
-        # 计算按钮状态
         if pressed:
-            buttons = 1  # bit0 = 左键
+            buttons = 1
         else:
             buttons = 0
 
-        # 放入鼠标转发队列 (与物理鼠标同队列, 保证时序正确)
         packet = encode_packet(buttons=buttons, dx=0, dy=0, wheel=0)
-        try:
-            self._mouse_queue.put_nowait(packet)
-            self.stats['packets_sent'] += 1
-            self.stats['bytes_sent'] += len(packet)
-        except queue.Full:
-            pass
+        if self.serial.is_connected:
+            try:
+                self.serial._serial.write(packet)
+                self.stats['packets_sent'] += 1
+                self.stats['bytes_sent'] += len(packet)
+            except Exception:
+                pass
 
         # 通知前端扳机触发
         if self._ws_client:
@@ -1046,29 +1046,28 @@ class MouseForwarderBackend:
     # ================================================================
     
     def _on_mouse_event(self, event: MouseEvent):
-        """鼠标事件回调 (叠加 AI 轨迹后放入队列)"""
+        """鼠标事件回调 (放入队列, 由转发线程写入串口)"""
         self.stats['mouse_events'] += 1
 
         # 过滤 SetCursorPos 回弹事件 (单次位移超过 200px 的直接丢弃)
         if abs(event.dx) > 200 or abs(event.dy) > 200:
             return
 
-        # 叠加 AI 轨迹到物理鼠标 (按钮状态由物理事件携带)
-        ai_dx = self._ai_dx
-        ai_dy = self._ai_dy
-        self._ai_dx = 0
-        self._ai_dy = 0
-        comb_dx = event.dx + ai_dx
-        comb_dy = event.dy + ai_dy
+        # 叠加扳机状态 (扳机按下时, 无论物理鼠标状态, 强制左键)
+        btns = event.buttons
+        if self._trigger_armed:
+            btns |= 1
 
         # 放入队列, 由转发线程写入串口 (不阻塞 pynput 回调)
-        packet = encode_packet(event.buttons, comb_dx, comb_dy, event.wheel)
+        packet = encode_packet(btns, event.dx, event.dy, event.wheel)
         try:
             self._mouse_queue.put_nowait(packet)
             self.stats['packets_sent'] += 1
             self.stats['bytes_sent'] += len(packet)
         except queue.Full:
             pass
+
+        # 异步通知前端 (不阻塞串口发送)
 
         # 异步通知前端 (不阻塞串口发送)
         if self._loop:
