@@ -39,18 +39,18 @@ class TinyNN:
         self.y_scale = y_scale
 
         # P型初始化: 初始行为 ≈ PID, 在线学习逐步优化
-        # W1: error_x 走前4个神经元, error_y 走后4个
+        # W1: 第一层线性 (无 ReLU, 否则负误差被杀死)
         self.W1 = np.zeros((4, 8))
-        self.W1[0, 0:4] = 1.0  # error_x → hidden 0-3
-        self.W1[1, 4:8] = 1.0  # error_y → hidden 4-7
-        self.W1[2, 2] = 0.5  # vel_x 少量输入
-        self.W1[3, 6] = 0.5  # vel_y 少量输入
-        self.b1 = np.ones(8) * 0.1  # 小偏置保持 ReLU 激活
+        self.W1[0, 0:4] = 0.5   # error_x → hidden 0-3
+        self.W1[1, 4:8] = 0.5   # error_y → hidden 4-7
+        self.W1[2, 2] = 0.3     # vel_x 少量输入
+        self.W1[3, 6] = 0.3     # vel_y 少量输入
+        self.b1 = np.zeros(8)   # 线性层无偏置
 
-        # W2: 部分交叉混合
+        # W2: 第二层带 ReLU
         self.W2 = np.eye(8) * 0.5
-        self.W2[0, 4] = 0.2  # 少量 x→y 交叉
-        self.W2[4, 0] = 0.2  # 少量 y→x 交叉
+        self.W2[0, 4] = 0.2
+        self.W2[4, 0] = 0.2
         self.b2 = np.zeros(8)
 
         # W3: 映射到输出, 初始 dx ≈ 0.3*error_x, dy ≈ 0.3*y_scale*error_y
@@ -78,10 +78,10 @@ class TinyNN:
         Returns:
             [2] = [dx, dy]  浮点数, 直接用作鼠标位移
         """
-        z1 = x @ self.W1 + self.b1
-        a1 = np.maximum(z1, 0)  # ReLU
+        z1 = x @ self.W1 + self.b1  # 第一层线性 (不经过 ReLU, 保留负值)
+        a1 = z1
         z2 = a1 @ self.W2 + self.b2
-        a2 = np.maximum(z2, 0)
+        a2 = np.maximum(z2, 0)  # ReLU 在第二层
         z3 = a2 @ self.W3 + self.b3
 
         self._cache = {'x': x, 'z1': z1, 'a1': a1, 'z2': z2, 'a2': a2, 'z3': z3}
@@ -135,20 +135,20 @@ class TinyNN:
 
         # 输出层梯度
         dL_dz3 = (output - target) / batch_size  # [2]
-        dL_dW3 = np.outer(a2, dL_dz3)  # [8,2]
+        dL_dW3 = np.outer(cache['a2'], dL_dz3)  # [8,2]
         dL_db3 = dL_dz3  # [2]
 
-        # 隐藏层2
+        # 隐藏层2 + ReLU
         dL_da2 = dL_dz3 @ self.W3.T  # [8]
-        dL_dz2 = dL_da2 * (a2 > 0).astype(float)  # ReLU 导数
-        dL_dW2 = np.outer(cache['a1'], dL_dz2)  # [8,8]
-        dL_db2 = dL_dz2  # [8]
+        dL_dz2 = dL_da2 * (cache['a2'] > 0).astype(float)
+        dL_dW2 = np.outer(cache['a1'], dL_dz2)
+        dL_db2 = dL_dz2
 
-        # 隐藏层1
-        dL_da1 = dL_dz2 @ self.W2.T  # [8]
-        dL_dz1 = dL_da1 * (cache['a1'] > 0).astype(float)
-        dL_dW1 = np.outer(x, dL_dz1)  # [4,8]
-        dL_db1 = dL_dz1  # [8]
+        # 隐藏层1 (线性, 无激活)
+        dL_da1 = dL_dz2 @ self.W2.T
+        dL_dz1 = dL_da1  # 线性层导数为1
+        dL_dW1 = np.outer(x, dL_dz1)
+        dL_db1 = dL_dz1
 
         # SGD 更新
         self.W3 -= self.lr * dL_dW3
