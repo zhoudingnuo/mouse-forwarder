@@ -519,9 +519,9 @@ class TrajectoryCalculator:
         if distance == 0:
             return []
 
-        # 动态步长倍数 (远→近递减)
-        FAR_DIST = 200.0   # 超过此距离用最大倍数
-        NEAR_DIST = 10.0   # 低于此距离用最小倍数
+        # 动态步长倍数 (检测范围仅128px, 所以100px就算"远")
+        FAR_DIST = 100.0   # ≥100px 用最大倍数
+        NEAR_DIST = 5.0    # ≤5px 用最小倍数
         if distance >= FAR_DIST:
             multiplier = 3.0
         elif distance <= NEAR_DIST:
