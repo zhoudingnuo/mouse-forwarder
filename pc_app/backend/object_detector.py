@@ -44,6 +44,7 @@ class ObjectDetector:
         self._yolo_model = None  # ultralytics YOLO 实例
         self._inference_time = 0.0
         self._inference_count = 0
+        self._last_crop_offset = (0, 0)  # 中心裁剪偏移 (x, y)
 
     @property
     def is_loaded(self) -> bool:
@@ -145,19 +146,26 @@ class ObjectDetector:
     # ================================================================
 
     def _detect_onnx(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
-        """ONNX 模型推理 (GPU 预处理 + GPU 推理, 模型内置 resize/normalize)"""
+        """ONNX 模型推理 (中心裁剪 640×640, 无需 resize)"""
         import time
 
         orig_h, orig_w = original_shape or frame.shape[:2]
 
-        # 轻微 CPU 预处理: BGR→RGB + HWC→CHW + batch (~4ms)
+        # 中心裁剪 640×640 (零 CPU 开销, numpy slice)
         t0 = time.perf_counter()
-        rgb = frame[:, :, ::-1]  # BGR→RGB by slicing (zero-copy)
-        chw = np.ascontiguousarray(rgb.transpose(2, 0, 1))  # HWC→CHW
-        input_tensor = chw[np.newaxis, :].astype(np.uint8)  # add batch dim
+        crop_size = self.INPUT_SIZE
+        cx, cy = orig_w // 2, orig_h // 2
+        x1 = cx - crop_size // 2
+        y1 = cy - crop_size // 2
+        crop = frame[y1:y1 + crop_size, x1:x1 + crop_size]  # [640, 640, 3] BGR
+        rgb = crop[:, :, ::-1]  # BGR→RGB (zero-copy)
+        chw = np.transpose(rgb, (2, 0, 1)).astype(np.float32) / 255.0
+        input_tensor = np.expand_dims(chw, axis=0)
+        # 保存裁剪偏移用于坐标映射
+        self._last_crop_offset = (x1, y1)
         t1 = time.perf_counter()
 
-        # GPU 推理 (模型内部自动做 resize + normalize + detect)
+        # DML 推理 (~8ms)
         outputs = self._session.run([self.OUTPUT_NAME], {self.INPUT_NAME: input_tensor})
         output = np.squeeze(outputs[0], axis=0)
         t2 = time.perf_counter()
@@ -196,13 +204,12 @@ class ObjectDetector:
         final_conf = final_conf[mask]
         cls_ids = cls_ids[mask]
 
-        # 映射回原始帧尺寸 (向量化)
-        scale_x = orig_w / self.INPUT_SIZE
-        scale_y = orig_h / self.INPUT_SIZE
-        x1 = (cx - w / 2) * scale_x
-        y1 = (cy - h / 2) * scale_y
-        x2 = (cx + w / 2) * scale_x
-        y2 = (cy + h / 2) * scale_y
+        # 映射回原始帧尺寸 (中心裁剪, 加上裁剪偏移)
+        off_x, off_y = self._last_crop_offset
+        x1 = off_x + (cx - w / 2)
+        y1 = off_y + (cy - h / 2)
+        x2 = off_x + (cx + w / 2)
+        y2 = off_y + (cy + h / 2)
 
         # 快速 NMS (向量化计算)
         indices = np.argsort(-final_conf)
