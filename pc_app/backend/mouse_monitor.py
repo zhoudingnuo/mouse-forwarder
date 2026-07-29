@@ -237,9 +237,6 @@ class MouseMonitor:
         else:
             self._buttons_state &= ~bit
 
-        # 调试: 打印按钮事件
-        logger.info(f"[BTN] {button} {'pressed' if pressed else 'released'} bit={bit} state={self._buttons_state}")
-
         event = MouseEvent(
             buttons=self._buttons_state,
             dx=0,
