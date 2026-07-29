@@ -640,6 +640,11 @@ function onState(data) {
         // 同步滑块与后端配置
         if (data.config) {
             syncSliders(data.config);
+            // 同步扳机开关
+            if (data.config.trigger_enabled !== undefined) {
+                state.triggerEnabled = data.config.trigger_enabled;
+                updateTriggerUI(data.config.trigger_enabled);
+            }
         }
     }
 
