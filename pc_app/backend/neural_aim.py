@@ -66,11 +66,9 @@ class TinyNN:
         Returns:
             dx (float)
         """
-        z1 = x @ self.W1 + self.b1
-        a1 = np.maximum(z1, 0)
-        z2 = a1 @ self.W2 + self.b2
-        a2 = np.maximum(z2, 0)
-        z3 = float(a2 @ self.W3 + self.b3)
+        z1 = x @ self.W1 + self.b1  # 线性
+        z2 = z1 @ self.W2 + self.b2  # 线性
+        z3 = float(z2 @ self.W3 + self.b3)
 
         # 输出增益
         z3 = z3 * self._gain
@@ -79,7 +77,7 @@ class TinyNN:
         if not np.isfinite(z3):
             z3 = 0.0
 
-        self._cache = {'x': x, 'z1': z1, 'a1': a1, 'z2': z2, 'a2': a2, 'z3': z3}
+        self._cache = {'x': x, 'z1': z1, 'z2': z2, 'z3': z3}
         return z3
 
     def train_step(self, error_x: float):
@@ -118,18 +116,16 @@ class TinyNN:
         delta = max(-3.0, min(3.0, delta))
         target = output + delta
 
-        # 反向传播
+        # 反向传播 (全线性)
         dL_dz3 = output - target  # 标量
-        dL_dW3 = a2 * dL_dz3  # [4]
+        dL_dW3 = z2 * dL_dz3  # [4]
         dL_db3 = dL_dz3
 
-        dL_da2 = self.W3 * dL_dz3  # [4]
-        dL_dz2 = dL_da2 * (a2 > 0).astype(float)  # ReLU
-        dL_dW2 = np.outer(a1, dL_dz2)  # [4,4]
+        dL_dz2 = dL_dz3 * self.W3  # [4] (线性, 无激活)
+        dL_dW2 = np.outer(z1, dL_dz2)  # [4,4]
         dL_db2 = dL_dz2  # [4]
 
-        dL_da1 = dL_dz2 @ self.W2.T  # [4]
-        dL_dz1 = dL_da1 * (a1 > 0).astype(float)
+        dL_dz1 = dL_dz2 @ self.W2.T  # [4] (线性)
         dL_dW1 = np.outer(x, dL_dz1)  # [2,4]
         dL_db1 = dL_dz1  # [4]
 
