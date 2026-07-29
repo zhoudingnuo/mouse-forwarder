@@ -17,7 +17,6 @@ import math
 import random
 import time
 from typing import List, Optional, Tuple
-from collections import deque
 
 import numpy as np
 
@@ -62,7 +61,6 @@ class TinyNN:
         self.b3 = np.zeros(2)
 
         # 训练缓存
-        self._buffer: deque = deque(maxlen=64)
         self._train_count = 0
         self._last_status: str = ''
 
@@ -178,23 +176,19 @@ class TinyNN:
             np.clip(param, -5.0, 5.0, out=param)
 
         self._train_count += 1
-        self._buffer.append((abs(error_delta), intensity))
 
         # 每 30 帧记录训练统计 (由 get_stats 返回)
         if self._train_count % 30 == 0:
-            avg_delta = np.mean([d for d, _ in self._buffer[-30:]])
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
-            self._last_status = (f'🧠 train={self._train_count} err_delta={avg_delta:.1f} '
-                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f}')
+            self._last_status = (f'🧠 train={self._train_count} '
+                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f} '
+                                 f'out=({output[0]:.1f},{output[1]:.1f})')
 
     def get_stats(self) -> dict:
         """获取训练统计"""
-        avg_delta = np.mean([d for d, _ in self._buffer]) if self._buffer else 0
         return {
             'train_steps': self._train_count,
-            'buffer_size': len(self._buffer),
-            'avg_error_delta': round(avg_delta, 3),
             'last_status': self._last_status,
         }
 
