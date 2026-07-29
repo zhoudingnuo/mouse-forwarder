@@ -167,7 +167,6 @@ class TrajectoryCalculator:
         self._integral_y: float = 0.0
         self._prev_error_x: float = 0.0
         self._prev_error_y: float = 0.0
-        self._prev_dist_for_nn: float = 0.0  # 上一帧误差, 用于 NN 在线训练
 
         # 统计
         self._trajectories_computed: int = 0
@@ -258,10 +257,9 @@ class TrajectoryCalculator:
         scaled_ey = error_y * self.config.y_scale
         distance = math.sqrt(error_x ** 2 + scaled_ey ** 2)
 
-        # ── 神经网络在线训练 (用上一帧误差和当前误差) ──
-        if self.config.nn_mode and self._nn is not None and self._prev_dist_for_nn > 0:
-            self._nn.train_step(distance, self._prev_dist_for_nn)
-        self._prev_dist_for_nn = distance
+        # ── 神经网络在线训练 (用当前 X 轴误差) ──
+        if self.config.nn_mode and self._nn is not None:
+            self._nn.train_step(error_x)
 
 # ── 滞回死区 (从配置读取) ──
         SETTLE_DEADZONE = self.config.settle_deadzone
@@ -315,30 +313,27 @@ class TrajectoryCalculator:
             # 神经网络模式
             if self._nn is None:
                 from neural_aim import TinyNN
-                self._nn = TinyNN(lr=self.config.nn_lr, y_scale=self.config.y_scale,
+                self._nn = TinyNN(lr=self.config.nn_lr,
                                   max_step_px=self.config.max_step_px)
                 logger.info("Neural network controller initialized")
 
-            # 估计目标速度
-            vx, vy = 0.0, 0.0
+            # 估计目标速度 (仅 X 轴)
+            vx = 0.0
             if len(self._target_history) >= 3:
                 recent = self._target_history[-3:]
                 vx = (recent[-1][0] - recent[0][0]) / 2
-                vy = (recent[-1][1] - recent[0][1]) / 2
 
-            # NN 前向: [error_x, error_y, vel_x, vel_y] → [dx, dy]
-            inp = np.array([error_x, error_y, vx, vy], dtype=np.float32)
-            nn_out = self._nn.forward(inp)
-            output_x, output_y = float(nn_out[0]), float(nn_out[1])
-            # 限幅: 不超过 2×基准步长, 且不超过误差本身 (防止过冲甩出框)
+            # NN 前向: [error_x, vel_x] → dx
+            inp = np.array([error_x, vx], dtype=np.float32)
+            output_x = self._nn.forward(inp)
+            output_y = 0.0
+            # 限幅: 不超过 2×基准步长, 且不超过误差本身
             max_out = self.config.max_step_px * 2.0
             output_x = max(-max_out, min(max_out, output_x))
             output_x = max(-abs(error_x), min(abs(error_x), output_x)) if error_x != 0 else output_x
-            output_y = max(-max_out, min(max_out, output_y))
-            output_y = max(-abs(error_y), min(abs(error_y), output_y)) if error_y != 0 else output_y
             self._nn_io = {
-                'in': f'({error_x:.0f},{error_y:.0f},{vx:.1f},{vy:.1f})',
-                'out': f'({output_x:.1f},{output_y:.1f})',
+                'in': f'({error_x:.0f},{vx:.1f})',
+                'out': f'({output_x:.1f},0)',
                 'train': self._nn._train_count,
                 'gain': f'{self._nn._gain:.2f}',
             }
