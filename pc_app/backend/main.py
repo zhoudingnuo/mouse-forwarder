@@ -88,7 +88,7 @@ class MouseForwarderBackend:
         self.config = Config()
         
         # 扳机参数默认值 (稍后被配置覆盖)
-        self._trigger_enabled = False
+        self._trigger_enabled = True
         self._trigger_threshold = 5
         self._trigger_armed = False
         self._trigger_last_fire = 0
@@ -100,14 +100,14 @@ class MouseForwarderBackend:
             for k, v in traj_cfg.items():
                 if hasattr(self.trajectory.config, k):
                     setattr(self.trajectory.config, k, v)
-            # 恢复扳机参数 (不在 TrajectoryConfig 里, 单独处理)
+            # 恢复扳机和轨迹状态
             if 'trigger_enabled' in traj_cfg:
                 self._trigger_enabled = bool(traj_cfg['trigger_enabled'])
             if 'trigger_threshold' in traj_cfg:
                 self._trigger_threshold = int(traj_cfg['trigger_threshold'])
-            # 强制轨迹禁用 (用户需手动开启)
-            self._trajectory_enabled = False
-            self.trajectory.config.enabled = False
+            if 'enabled' in traj_cfg:
+                self._trajectory_enabled = bool(traj_cfg['enabled'])
+                self.trajectory.config.enabled = self._trajectory_enabled
             logger.info(f"Loaded trajectory config from saved settings")
 
         # WebSocket 客户端
@@ -131,8 +131,8 @@ class MouseForwarderBackend:
         self._capture_active = False
         self._detection_active = False
         
-        self._trajectory_enabled = False
-        self._show_video = True  # 默认显示画面
+        self._trajectory_enabled = True
+        self._show_video = False  # 默认关闭画面显示
         self._lock_mode = False  # 锁定模式: 全屏黑幕
         self._keyboard_listener = None  # Escape 键监听器
         

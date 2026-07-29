@@ -17,9 +17,9 @@
         mouseActive: false,
         serialConnected: false,
         stats: { mouse_events: 0, packets_sent: 0, bytes_sent: 0, uptime: 0 },
-        trajectory: { enabled: false },
-        lockMode: false,
-        triggerEnabled: false,
+	        trajectory: { enabled: true },
+	        lockMode: false,
+	        triggerEnabled: true,
     };
 
     /**
