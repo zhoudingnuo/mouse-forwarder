@@ -20,6 +20,7 @@
 	        trajectory: { enabled: true },
 	        lockMode: false,
 	        triggerEnabled: true,
+	        nnMode: false,
     };
 
     /**
@@ -84,6 +85,18 @@
                 ws.send({ type: 'trajectory_clear' });
                 if (mousePanel) mousePanel.clearTrail();
                 if (settings) settings.addLog('轨迹已清空', 'info');
+            });
+        }
+
+        // NN 模式开关
+        const btnNn = document.getElementById('btn-nn-mode');
+        if (btnNn) {
+            btnNn.addEventListener('click', () => {
+                state.nnMode = !state.nnMode;
+                btnNn.textContent = state.nnMode ? '🧠 NN' : '🧠 PID';
+                btnNn.className = state.nnMode ? 'btn btn-sm primary' : 'btn btn-sm';
+                sendTrajectoryConfig();
+                settings.addLog(state.nnMode ? '切换到神经网络模式' : '切换到PID模式', 'info');
             });
         }
 
@@ -306,6 +319,8 @@
             settle_deadzone: parseFloat(el('slider-deadzone')?.value) ?? 8,
             unsettle_hysteresis: parseFloat(el('slider-hysteresis')?.value) ?? 20,
             y_scale: parseFloat(el('slider-yscale')?.value) ?? 0.20,
+            nn_mode: state.nnMode ?? false,
+            nn_lr: 0.001,
         });
     }
 
@@ -671,6 +686,15 @@ function onState(data) {
             if (data.config.trigger_enabled !== undefined) {
                 state.triggerEnabled = data.config.trigger_enabled;
                 updateTriggerUI(data.config.trigger_enabled);
+            }
+            // 同步 NN 模式
+            if (data.config.nn_mode !== undefined) {
+                state.nnMode = data.config.nn_mode;
+                const btnNn = document.getElementById('btn-nn-mode');
+                if (btnNn) {
+                    btnNn.textContent = state.nnMode ? '🧠 NN' : '🧠 PID';
+                    btnNn.className = state.nnMode ? 'btn btn-sm primary' : 'btn btn-sm';
+                }
             }
         }
     }
