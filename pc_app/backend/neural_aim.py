@@ -31,7 +31,8 @@ class TinyNN:
 
         # 网络: 2 → 4 → 4 → 1
         # P型初始化: dx ≈ 0.25 * error_x
-        self.W1 = np.array([[1.0], [0.5], [0.0], [0.0]])  # [2,4]: error_x, vel_x
+        self.W1 = np.array([[1.0, 0.5, 0.0, 0.0],   # error_x → hidden 0,1
+                            [0.0, 0.0, 0.5, 0.25]])  # vel_x   → hidden 2,3
         self.b1 = np.zeros(4)
 
         self.W2 = np.eye(4) * 0.5
