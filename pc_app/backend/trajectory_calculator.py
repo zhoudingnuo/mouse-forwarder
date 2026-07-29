@@ -330,10 +330,12 @@ class TrajectoryCalculator:
             inp = np.array([error_x, error_y, vx, vy], dtype=np.float32)
             nn_out = self._nn.forward(inp)
             output_x, output_y = float(nn_out[0]), float(nn_out[1])
-            # 限幅: 最大不超过 3×基准步长, 防止甩出检测框
-            max_out = self.config.max_step_px * 3.0
+            # 限幅: 不超过 2×基准步长, 且不超过误差本身 (防止过冲甩出框)
+            max_out = self.config.max_step_px * 2.0
             output_x = max(-max_out, min(max_out, output_x))
+            output_x = max(-abs(error_x), min(abs(error_x), output_x)) if error_x != 0 else output_x
             output_y = max(-max_out, min(max_out, output_y))
+            output_y = max(-abs(error_y), min(abs(error_y), output_y)) if error_y != 0 else output_y
             self._nn_io = {
                 'in': f'({error_x:.0f},{error_y:.0f},{vx:.1f},{vy:.1f})',
                 'out': f'({output_x:.1f},{output_y:.1f})',
@@ -683,12 +685,12 @@ class TrajectoryCalculator:
         FAR_DIST = 100.0
         NEAR_DIST = 5.0
         if distance >= FAR_DIST:
-            multiplier = 3.0
+            multiplier = 2.0
         elif distance <= NEAR_DIST:
             multiplier = 0.5
         else:
             t = (distance - NEAR_DIST) / (FAR_DIST - NEAR_DIST)
-            multiplier = 0.5 + t * 2.5
+            multiplier = 0.5 + t * 1.5  # 0.5 → 2.0
 
         step_size = max_step * multiplier
 
@@ -703,12 +705,12 @@ class TrajectoryCalculator:
         while remaining > 0:
             # 当前步长: 越靠近越小
             if remaining >= FAR_DIST:
-                m = 3.0
+                m = 2.0
             elif remaining <= NEAR_DIST:
                 m = 0.5
             else:
                 t = (remaining - NEAR_DIST) / (FAR_DIST - NEAR_DIST)
-                m = 0.5 + t * 2.5
+                m = 0.5 + t * 1.5
             cur_step = max_step * m
 
             # 最后一步不超过剩余距离
