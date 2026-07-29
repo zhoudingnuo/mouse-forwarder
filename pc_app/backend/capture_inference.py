@@ -27,17 +27,20 @@ import numpy as np
 logger = logging.getLogger('capture')
 
 # 模型参数
-MODEL_PATH = 'best.pt'  # 默认模型 (支持 .pt 和 .onnx)
-INPUT_SIZE = 640  # 模型输入尺寸 640x640
-CONF_THRESHOLD = 0.25  # 置信度阈值
-NMS_THRESHOLD = 0.45  # NMS IoU 阈值
+MODEL_PATH = 'valorant.onnx'  # 默认模型
+INPUT_SIZE = 256              # 模型输入尺寸 256x256
+CROP_SIZE = 640               # 中心裁剪尺寸
+CONF_THRESHOLD = 0.25         # 置信度阈值
+NMS_THRESHOLD = 0.45          # NMS IoU 阈值
 
 # 类别名称: 从 ONNX 模型 metadata 读取, 不存在则用默认值
 _MODEL_PATH = None
 for _p in [
-    os.path.join(os.path.dirname(__file__), '..', '..', 'best.onnx'),
     os.path.join(os.path.dirname(__file__), '..', '..', 'valorant.onnx'),
+    os.path.join(os.path.dirname(__file__), '..', '..', 'best.onnx'),
+    os.path.join(os.path.dirname(__file__), '..', 'valorant.onnx'),
     os.path.join(os.path.dirname(__file__), '..', 'best.onnx'),
+    os.path.join(os.path.dirname(__file__), 'valorant.onnx'),
     os.path.join(os.path.dirname(__file__), 'best.onnx'),
 ]:
     if os.path.exists(_p):
@@ -63,10 +66,10 @@ def _load_class_names_from_onnx(onnx_path: str) -> list:
                     pass
     except Exception:
         pass
-    return ['head', 'body', 'weapon', 'unknown']
+    return ['body', 'head', 'teammate', 'breakable', 'dodge']
 
 
-CLASS_NAMES = _load_class_names_from_onnx(_MODEL_PATH) if os.path.exists(_MODEL_PATH) else ['head', 'body', 'weapon', 'unknown']
+CLASS_NAMES = _load_class_names_from_onnx(_MODEL_PATH) if os.path.exists(_MODEL_PATH) else ['body', 'head', 'teammate', 'breakable', 'dodge']
 
 
 def update_class_names(model_path: str):
@@ -301,94 +304,67 @@ class CaptureInferenceEngine:
 
         return cap
 
-    def preprocess(self, frame: np.ndarray) -> np.ndarray:
+    def preprocess(self, frame: np.ndarray):
         """
         预处理帧用于模型推理
 
-        1. 保持宽高比的 resize + padding 到 256x256
-        2. 归一化到 [0, 1]
-        3. 转换为 CHW 格式
+        中心裁剪 640×640 → resize 到 256×256 + /255 归一化
+        返回 (input_tensor, crop_offset)
         """
         h, w = frame.shape[:2]
+        cx, cy = w // 2, h // 2
+        half = CROP_SIZE // 2
+        x1 = max(0, cx - half)
+        y1 = max(0, cy - half)
+        crop = frame[y1:y1 + CROP_SIZE, x1:x1 + CROP_SIZE]
 
-        # 计算缩放比例, 保持宽高比
-        scale = min(INPUT_SIZE / h, INPUT_SIZE / w)
-        new_h, new_w = int(h * scale), int(w * scale)
-
-        # resize
-        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        # padding 到正方形
-        pad_h = INPUT_SIZE - new_h
-        pad_w = INPUT_SIZE - new_w
-        padded = cv2.copyMakeBorder(
-            resized,
-            pad_h // 2, pad_h - pad_h // 2,
-            pad_w // 2, pad_w - pad_w // 2,
-            cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
-
-        # BGR -> RGB, 归一化, CHW
-        rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        chw = np.transpose(rgb, (2, 0, 1))  # HWC -> CHW
-        chw = np.expand_dims(chw, axis=0)   # -> NCHW
-
-        return chw.astype(np.float32)
+        resized = cv2.resize(crop, (INPUT_SIZE, INPUT_SIZE))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        chw = np.expand_dims(np.transpose(rgb, (2, 0, 1)), axis=0).astype(np.float32)
+        return chw, (x1, y1)
 
     def postprocess(
         self,
         output: np.ndarray,
         frame_h: int,
         frame_w: int,
+        crop_offset,
     ) -> list:
         """
         后处理 YOLO 输出
 
         Args:
-            output: [1, 9, 1344] - YOLO 原始输出
+            output: [1, 9, 1344] - YOLO 原始输出 (ch0-3 bbox, ch4-8 cls 已 sigmoid)
             frame_h: 原始帧高度
             frame_w: 原始帧宽度
+            crop_offset: (x1, y1) 裁剪偏移
 
         Returns:
             list[Detection]: 过滤和 NMS 后的检测结果
         """
-        # 取 batch 0
-        pred = output[0]  # [9, 1344]
+        off_x, off_y = crop_offset
+        pred = np.squeeze(output, axis=0)  # [9, 1344]
+        pred = pred.T  # [1344, 9]
 
-        # 转置: [1344, 9]
-        pred = pred.T
+        # bbox: 模型输出在 256×256 空间 → 640×640 裁剪空间 → 原图
+        scale_crop = CROP_SIZE / INPUT_SIZE  # 2.5
+        cx = pred[:, 0] * scale_crop + off_x
+        cy = pred[:, 1] * scale_crop + off_y
+        w = pred[:, 2] * scale_crop
+        h = pred[:, 3] * scale_crop
 
-        # 计算缩放比例 (与 preprocess 一致)
-        scale = min(INPUT_SIZE / frame_h, INPUT_SIZE / frame_w)
-        new_h, new_w = int(frame_h * scale), int(frame_w * scale)
-        pad_h = INPUT_SIZE - new_h
-        pad_w = INPUT_SIZE - new_w
-
-        # 从 padding 坐标系转换回原始图像坐标系
-        cx = (pred[:, 0] - pad_w / 2) / scale
-        cy = (pred[:, 1] - pad_h / 2) / scale
-        w = pred[:, 2] / scale
-        h = pred[:, 3] / scale
-
-        # 转为 xyxy 格式
         x1 = (cx - w / 2).clip(0, frame_w)
         y1 = (cy - h / 2).clip(0, frame_h)
         x2 = (cx + w / 2).clip(0, frame_w)
         y2 = (cy + h / 2).clip(0, frame_h)
 
-        # 置信度
-        obj_conf = pred[:, 4]
-
-        # 类别概率 (5 个 softmax 类别)
-        cls_probs = pred[:, 5:9]
-        cls_ids = np.argmax(cls_probs, axis=1)
-        cls_scores = np.max(cls_probs, axis=1)
-
-        # 综合置信度 = objectness * class_score
-        scores = obj_conf * cls_scores
+        # 类别概率: ch4-ch8 已 sigmoid (5 类: body, head, teammate, breakable, dodge)
+        cls_scores = pred[:, 4:9]  # [1344, 5]
+        cls_ids = np.argmax(cls_scores, axis=1)
+        scores = np.max(cls_scores, axis=1)
 
         # 过滤低置信度
-        mask = scores > CONF_THRESHOLD
+        mask = scores >= CONF_THRESHOLD
         if not np.any(mask):
             return []
 
@@ -396,25 +372,17 @@ class CaptureInferenceEngine:
         scores = scores[mask]
         cls_ids = cls_ids[mask]
 
-        # 归一化到 [0, 1] 用于 to_dict
-        x1_norm = x1 / frame_w
-        y1_norm = y1 / frame_h
-        x2_norm = x2 / frame_w
-        y2_norm = y2 / frame_h
-
-        # NMS
+        # NMS (按类别分组)
         detections = []
-        # 按类别分组 NMS
         unique_cls = np.unique(cls_ids)
         for cls_id in unique_cls:
             cls_mask = cls_ids == cls_id
-            cls_x1 = x1_norm[cls_mask]
-            cls_y1 = y1_norm[cls_mask]
-            cls_x2 = x2_norm[cls_mask]
-            cls_y2 = y2_norm[cls_mask]
+            cls_x1 = x1[cls_mask]
+            cls_y1 = y1[cls_mask]
+            cls_x2 = x2[cls_mask]
+            cls_y2 = y2[cls_mask]
             cls_scores = scores[cls_mask]
 
-            # 按置信度排序
             order = np.argsort(-cls_scores)
             keep = []
 
@@ -424,7 +392,6 @@ class CaptureInferenceEngine:
                 if len(order) == 1:
                     break
 
-                # 计算 IoU
                 xx1 = np.maximum(cls_x1[i], cls_x1[order[1:]])
                 yy1 = np.maximum(cls_y1[i], cls_y1[order[1:]])
                 xx2 = np.minimum(cls_x2[i], cls_x2[order[1:]])
@@ -520,10 +487,10 @@ class CaptureInferenceEngine:
             # 推理
             try:
                 t0 = time.perf_counter()
-                input_tensor = self.preprocess(frame)
+                input_tensor, crop_offset = self.preprocess(frame)
                 output = self._session.run(['output0'], {'images': input_tensor})[0]
                 h, w = frame.shape[:2]
-                detections = self.postprocess(output, h, w)
+                detections = self.postprocess(output, h, w, crop_offset)
                 self._inf_counter += 1
 
                 # 每秒更新推理 FPS

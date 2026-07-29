@@ -1308,13 +1308,13 @@ def main():
         # 从项目根目录查找
         import os
         possible_paths = [
+            os.path.join(os.path.dirname(__file__), '..', '..', 'valorant.onnx'),
             os.path.join(os.path.dirname(__file__), '..', '..', 'best.onnx'),
             os.path.join(os.path.dirname(__file__), '..', '..', 'best.pt'),
-            os.path.join(os.path.dirname(__file__), '..', '..', 'valorant.onnx'),
-            os.path.join(os.path.dirname(__file__), '..', 'best.onnx'),
             os.path.join(os.path.dirname(__file__), '..', 'valorant.onnx'),
-            os.path.join(os.path.dirname(__file__), 'best.onnx'),
+            os.path.join(os.path.dirname(__file__), '..', 'best.onnx'),
             os.path.join(os.path.dirname(__file__), 'valorant.onnx'),
+            os.path.join(os.path.dirname(__file__), 'best.onnx'),
         ]
         for p in possible_paths:
             abs_p = os.path.abspath(p)

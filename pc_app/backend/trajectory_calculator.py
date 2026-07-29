@@ -33,7 +33,7 @@ class TrajectoryConfig:
     target_offset_x: int = 0            # 瞄准偏移 X (目标框宽度的百分比, 如 5=5%)
     target_offset_y: int = 0            # 瞄准偏移 Y (目标框高度的百分比)
     min_confidence: float = 0.30        # 最低置信度阈值
-    target_priority: int = 1           # 目标类别优先级 (-1=最近, 0=dropped spike, 1=enemy, 2=planted spike)
+    target_priority: int = 1           # 目标类别优先级 (1=head, -1=最近, 0=body, 2=teammate, 3=breakable, 4=dodge)
     jitter_amount: float = 0.10         # 随机抖动幅度 (像素)
     smoothing_samples: int = 8          # 指数移动平均的采样窗口
     max_trail_points: int = 200         # 轨迹点最大保留数
