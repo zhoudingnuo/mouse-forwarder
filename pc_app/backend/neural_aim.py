@@ -31,34 +31,34 @@ class TinyNN:
     权重存在 numpy 数组中, 手动实现前向和反向传播。
     """
 
-    def __init__(self, lr: float = 0.001, y_scale: float = 0.3):
+    def __init__(self, lr: float = 0.01, y_scale: float = 0.3):
         # 网络结构: 4 → 8 → 8 → 2
         # 输入: [error_x, error_y, vel_x, vel_y]
         # 输出: [dx, dy]
         self.lr = lr
         self.y_scale = y_scale
 
-        # P型初始化: 初始行为 ≈ PID, 在线学习逐步优化
-        # W1: 第一层线性 (无 ReLU, 否则负误差被杀死)
+        # P型初始化: dx ≈ 0.25*error_x, dy ≈ 0.25*y_scale*error_y
+        # W1: error_x → hidden[0:4], error_y → hidden[4:8]
         self.W1 = np.zeros((4, 8))
-        self.W1[0, 0:4] = 0.5   # error_x → hidden 0-3
-        self.W1[1, 4:8] = 0.5   # error_y → hidden 4-7
-        self.W1[2, 2] = 0.3     # vel_x 少量输入
-        self.W1[3, 6] = 0.3     # vel_y 少量输入
-        self.b1 = np.zeros(8)   # 线性层无偏置
+        self.W1[0, 0:4] = 1.0   # error_x
+        self.W1[1, 4:8] = 1.0   # error_y
+        self.W1[2, 2] = 0.5     # vel_x
+        self.W1[3, 6] = 0.5     # vel_y
+        self.b1 = np.zeros(8)
 
-        # W2: 第二层带 ReLU
+        # W2: 对角占优
         self.W2 = np.eye(8) * 0.5
         self.W2[0, 4] = 0.2
         self.W2[4, 0] = 0.2
         self.b2 = np.zeros(8)
 
-        # W3: 映射到输出, 初始 dx ≈ 0.3*error_x, dy ≈ 0.3*y_scale*error_y
+        # W3: dx←hidden[0], dy←hidden[4]
         self.W3 = np.zeros((8, 2))
-        self.W3[0, 0] = 0.3   # dx
-        self.W3[1, 0] = 0.2
-        self.W3[4, 1] = 0.3 * y_scale  # dy (带 y_scale 限制)
-        self.W3[5, 1] = 0.2 * y_scale
+        self.W3[0, 0] = 0.5           # dx
+        self.W3[1, 0] = 0.3
+        self.W3[4, 1] = 0.5 * y_scale  # dy
+        self.W3[5, 1] = 0.3 * y_scale
         self.b3 = np.zeros(2)
 
         # 训练缓存
@@ -160,6 +160,15 @@ class TinyNN:
 
         self._train_count += 1
         self._buffer.append((abs(error_delta), intensity))
+
+        # 每 30 帧打印训练过程
+        if self._train_count % 30 == 0:
+            avg_delta = np.mean([d for d, _ in self._buffer[-30:]])
+            w1_mean = np.abs(self.W1).mean()
+            w3_mean = np.abs(self.W3).mean()
+            print(f'[NN] train={self._train_count} err_delta={avg_delta:.2f} '
+                  f'|W1|={w1_mean:.3f} |W3|={w3_mean:.3f} lr={self.lr:.4f} '
+                  f'output=({output[0]:.2f},{output[1]:.2f})')
 
     def get_stats(self) -> dict:
         """获取训练统计"""
