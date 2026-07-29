@@ -340,6 +340,7 @@ class TrajectoryCalculator:
                 'in': f'({error_x:.0f},{error_y:.0f},{vx:.1f},{vy:.1f})',
                 'out': f'({output_x:.1f},{output_y:.1f})',
                 'train': self._nn._train_count,
+                'gain': f'{self._nn._gain:.2f}',
             }
         else:
             # PID 模式
@@ -453,7 +454,8 @@ class TrajectoryCalculator:
             # 每帧 I/O
             if self._nn_io:
                 io = self._nn_io
-                stats['nn_io'] = f"in={io['in']} out={io['out']} step#{io['train']}"
+                gain_str = f" gain={io['gain']}" if io.get('gain') else ''
+                stats['nn_io'] = f"in={io['in']} out={io['out']}{gain_str} step#{io['train']}"
         return stats
 
     # ============ 轨迹日志 ============

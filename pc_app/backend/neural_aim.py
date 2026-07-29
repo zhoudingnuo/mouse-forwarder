@@ -64,6 +64,8 @@ class TinyNN:
         # 训练缓存
         self._train_count = 0
         self._last_status: str = ''
+        # 输出增益: 从 0.1 逐渐增至 1.0 (随训练步数线性增长)
+        self._gain = 0.1
 
         # 从上一次推理保存的中间值 (用于反向传播)
         self._cache = {}
@@ -73,6 +75,9 @@ class TinyNN:
         z1 = x @ self.W1 + self.b1
         z2 = z1 @ self.W2 + self.b2
         z3 = z2 @ self.W3 + self.b3
+
+        # 输出增益: 初始 0.1, 随训练逐步增至 1.0
+        z3 = z3 * self._gain
 
         # NaN/Inf 防护 (权重发散时输出零)
         if not np.all(np.isfinite(z3)):
@@ -166,13 +171,15 @@ class TinyNN:
 
         self._train_count += 1
 
+        # 输出增益: 随训练步数从 0.1 线性增至 1.0 (约 10000 步后到 1)
+        self._gain = min(1.0, 0.1 + 0.9 * self._train_count / 10000)
+
         # 每 30 帧记录训练统计 (由 get_stats 返回)
         if self._train_count % 30 == 0:
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
-            self._last_status = (f'🧠 train={self._train_count} '
-                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f} '
-                                 f'out=({output[0]:.1f},{output[1]:.1f})')
+            self._last_status = (f'🧠 train={self._train_count} gain={self._gain:.2f} '
+                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f}')
 
     def get_stats(self) -> dict:
         """获取训练统计"""
