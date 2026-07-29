@@ -55,7 +55,7 @@ class TrajectoryConfig:
     max_steps_per_frame: int = 30      # 每帧最多发送的步数
     settle_deadzone: float = 3.0        # 进入死区的阈值 (像素), 目标在此范围内停止移动 (最小1px)
     unsettle_hysteresis: float = 5.0   # 退出死区的滞回阈值 (像素), 防止抖动 (最小1px)
-    y_scale: float = 0.60              # Y 轴幅度缩放 (0.0-1.0), 防抖用
+    y_scale: float = 0.20              # Y 轴幅度缩放 (0.0-1.0), 防抖用
 
 
 @dataclass
