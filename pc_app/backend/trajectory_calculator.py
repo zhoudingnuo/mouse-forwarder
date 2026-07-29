@@ -315,7 +315,8 @@ class TrajectoryCalculator:
             # 神经网络模式
             if self._nn is None:
                 from neural_aim import TinyNN
-                self._nn = TinyNN(lr=self.config.nn_lr, y_scale=self.config.y_scale)
+                self._nn = TinyNN(lr=self.config.nn_lr, y_scale=self.config.y_scale,
+                                  max_step_px=self.config.max_step_px)
                 logger.info("Neural network controller initialized")
 
             # 估计目标速度
@@ -329,6 +330,10 @@ class TrajectoryCalculator:
             inp = np.array([error_x, error_y, vx, vy], dtype=np.float32)
             nn_out = self._nn.forward(inp)
             output_x, output_y = float(nn_out[0]), float(nn_out[1])
+            # 限幅: 最大不超过 3×基准步长, 防止甩出检测框
+            max_out = self.config.max_step_px * 3.0
+            output_x = max(-max_out, min(max_out, output_x))
+            output_y = max(-max_out, min(max_out, output_y))
             self._nn_io = {
                 'in': f'({error_x:.0f},{error_y:.0f},{vx:.1f},{vy:.1f})',
                 'out': f'({output_x:.1f},{output_y:.1f})',

@@ -30,12 +30,13 @@ class TinyNN:
     权重存在 numpy 数组中, 手动实现前向和反向传播。
     """
 
-    def __init__(self, lr: float = 0.01, y_scale: float = 0.3):
+    def __init__(self, lr: float = 0.01, y_scale: float = 0.3, max_step_px: float = 10.0):
         # 网络结构: 4 → 8 → 8 → 2 (全线性, 无激活函数)
         # 输入: [error_x, error_y, vel_x, vel_y]
         # 输出: [dx, dy]
         self.lr = lr
         self.y_scale = y_scale
+        self.max_step_px = max_step_px
 
         # P型初始化: dx ≈ 0.25*error_x, dy ≈ 0.25*y_scale*error_y
         # W1: error_x → hidden[0:4], error_y → hidden[4:8]
@@ -109,25 +110,25 @@ class TinyNN:
             sign_output = 1.0 if output_x > 0 else -1.0 if output_x < 0 else 0.0
 
             if sign_output == 0:
-                # 输出为零, 但应该有输出 → 给一个基础步长
-                target[0] = sign_error * max(2.0, abs(error_x) * 0.15)
+                # 输出为零, 但应该有输出 → 给一个基础步长 (保守)
+                target[0] = sign_error * min(max_step_px, max(1.0, abs(error_x) * 0.08))
             elif sign_output != sign_error:
                 # 方向反了 → 翻转到正确方向
                 target[0] = sign_error * abs(output_x) * 0.8
             else:
-                # 方向正确 → 轻微增强 (但不过度)
-                target[0] = output_x * min(1.02, 1.0 + abs(error_x) / 200.0)
+                # 方向正确 → 轻微增强 (每帧最多 0.3%)
+                target[0] = output_x * min(1.003, 1.0 + abs(error_x) / 2000.0)
 
         # Y 轴同理 (带 y_scale 限制)
         if abs(x[1]) > 2.0:
             sign_err_y = 1.0 if x[1] > 0 else -1.0
             sign_out_y = 1.0 if output[1] > 0 else -1.0 if output[1] < 0 else 0.0
             if sign_out_y == 0:
-                target[1] = sign_err_y * max(1.0, abs(x[1]) * 0.15) * self.y_scale
+                target[1] = sign_err_y * min(self.max_step_px, max(1.0, abs(x[1]) * 0.08)) * self.y_scale
             elif sign_out_y != sign_err_y:
                 target[1] = sign_err_y * abs(output[1]) * 0.8
             else:
-                target[1] = output[1] * min(1.02, 1.0 + abs(x[1]) / 200.0)
+                target[1] = output[1] * min(1.003, 1.0 + abs(x[1]) / 2000.0)
 
         # 限制目标变化幅度
         delta = target - output
