@@ -3,7 +3,7 @@
     "enabled": true,
     "smooth_factor": 0.35,
     "max_step_px": 10,
-    "min_confidence": 0.6,
+    "min_confidence": 0.65,
     "target_offset_x": 0,
     "target_offset_y": 0,
     "jitter_amount": 0.0,

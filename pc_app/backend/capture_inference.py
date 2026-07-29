@@ -705,6 +705,14 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
         # 圆圈
         cv2.circle(frame, (ax, ay), crosshair_size, crosshair_color, 1)
 
+    # 绘制推理区域 (中心 640×640 裁剪框, 绿色边框)
+    fh, fw = frame.shape[:2]
+    s = 640
+    if fw >= s and fh >= s:
+        rx1 = fw // 2 - s // 2
+        ry1 = fh // 2 - s // 2
+        cv2.rectangle(frame, (rx1, ry1), (rx1 + s, ry1 + s), (0, 255, 0), 2)
+
     return frame
 
 

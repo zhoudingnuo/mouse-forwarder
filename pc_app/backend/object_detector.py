@@ -45,6 +45,7 @@ class ObjectDetector:
         self._inference_time = 0.0
         self._inference_count = 0
         self._last_crop_offset = (0, 0)  # 中心裁剪偏移 (x, y)
+        self._preproc_buffer = None  # 预分配预处理 buffer
 
     @property
     def is_loaded(self) -> bool:
@@ -151,17 +152,23 @@ class ObjectDetector:
 
         orig_h, orig_w = original_shape or frame.shape[:2]
 
-        # 中心裁剪 640×640 (零 CPU 开销, numpy slice)
+        # 中心裁剪 640×640 + HWC→CHW + normalize (预分配 buffer, 避免重复分配)
         t0 = time.perf_counter()
         crop_size = self.INPUT_SIZE
         cx, cy = orig_w // 2, orig_h // 2
         x1 = cx - crop_size // 2
         y1 = cy - crop_size // 2
         crop = frame[y1:y1 + crop_size, x1:x1 + crop_size]  # [640, 640, 3] BGR
-        rgb = crop[:, :, ::-1]  # BGR→RGB (zero-copy)
-        chw = np.transpose(rgb, (2, 0, 1)).astype(np.float32) / 255.0
-        input_tensor = np.expand_dims(chw, axis=0)
-        # 保存裁剪偏移用于坐标映射
+        # 预分配 buffer, 复用 (640×640×3 × float32 = 4.9MB)
+        if self._preproc_buffer is None or self._preproc_buffer.shape[1] != crop_size:
+            self._preproc_buffer = np.empty((1, 3, crop_size, crop_size), dtype=np.float32)
+        buf = self._preproc_buffer
+        scale = np.float32(1.0 / 255.0)
+        # BGR→RGB + HWC→CHW + float32/255 写入预分配 buffer
+        buf[0, 0] = crop[:, :, 2] * scale  # R
+        buf[0, 1] = crop[:, :, 1] * scale  # G
+        buf[0, 2] = crop[:, :, 0] * scale  # B
+        input_tensor = buf
         self._last_crop_offset = (x1, y1)
         t1 = time.perf_counter()
 
