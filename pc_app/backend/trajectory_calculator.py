@@ -542,9 +542,9 @@ class TrajectoryCalculator:
                 sdx = step_dx + jx
                 sdy = step_dy + jy
 
-            # 舍入为整数 (串口协议要求 int8)
-            sdx_int = max(-127, min(127, int(round(sdx))))
-            sdy_int = max(-127, min(127, int(round(sdy))))
+            # 舍入为整数 (向上取整: 0.3→1, -0.3→-1, 确保小位移也能发出去)
+            sdx_int = max(-127, min(127, int(math.ceil(sdx) if sdx >= 0 else math.floor(sdx))))
+            sdy_int = max(-127, min(127, int(math.ceil(sdy) if sdy >= 0 else math.floor(sdy))))
 
             # 跳过零位移
             if sdx_int == 0 and sdy_int == 0:
