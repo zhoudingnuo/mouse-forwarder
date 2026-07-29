@@ -972,6 +972,10 @@ class MouseForwarderBackend:
                     config.kd = float(data['kd'])
                 if 'velocity_ff' in data:
                     config.velocity_ff = float(data['velocity_ff'])
+                if 'nn_mode' in data:
+                    config.nn_mode = bool(data['nn_mode'])
+                if 'nn_lr' in data:
+                    config.nn_lr = float(data['nn_lr'])
                 if 'integral_limit' in data:
                     config.integral_limit = float(data['integral_limit'])
                 if 'max_steps_per_frame' in data:
@@ -1001,6 +1005,8 @@ class MouseForwarderBackend:
                 self.config.set('trajectory', 'ki', config.ki)
                 self.config.set('trajectory', 'kd', config.kd)
                 self.config.set('trajectory', 'velocity_ff', config.velocity_ff)
+                self.config.set('trajectory', 'nn_mode', config.nn_mode)
+                self.config.set('trajectory', 'nn_lr', config.nn_lr)
                 self.config.set('trajectory', 'integral_limit', config.integral_limit)
                 self.config.set('trajectory', 'max_steps_per_frame', config.max_steps_per_frame)
                 self.config.set('trajectory', 'settle_deadzone', config.settle_deadzone)
@@ -1026,6 +1032,8 @@ class MouseForwarderBackend:
                         'ki': config.ki,
                         'kd': config.kd,
                         'velocity_ff': config.velocity_ff,
+                        'nn_mode': config.nn_mode,
+                        'nn_lr': config.nn_lr,
                         'integral_limit': config.integral_limit,
                         'max_steps_per_frame': config.max_steps_per_frame,
                         'settle_deadzone': config.settle_deadzone,
@@ -1323,6 +1331,8 @@ class MouseForwarderBackend:
                 'ki': c.ki,
                 'kd': c.kd,
                 'velocity_ff': c.velocity_ff,
+                'nn_mode': c.nn_mode,
+                'nn_lr': c.nn_lr,
                 'integral_limit': c.integral_limit,
                 'max_steps_per_frame': c.max_steps_per_frame,
                 'settle_deadzone': c.settle_deadzone,

@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,8 +48,10 @@ class TrajectoryConfig:
     kp: float = 0.35                    # 比例增益 (直接响应偏移)
     ki: float = 0.02                    # 积分增益 (消除稳态误差, 补偿灵敏度)
     kd: float = 0.10                    # 微分增益 (抑制过冲)
-    velocity_ff: float = 0.0           # 速度前馈 (0=关闭, 0.3=补偿30%目标速度, 配合灵敏度调)
+    velocity_ff: float = 0.0           # 速度前馈 (0=关闭)
     integral_limit: float = 100.0       # 积分限幅 (防积分饱和)
+    nn_mode: bool = False              # True=神经网络控制, False=PID控制
+    nn_lr: float = 0.001               # 神经网络学习率
     max_steps_per_frame: int = 30      # 每帧最多发送的步数
     settle_deadzone: float = 3.0        # 进入死区的阈值 (像素), 目标在此范围内停止移动 (最小1px)
     unsettle_hysteresis: float = 5.0   # 退出死区的滞回阈值 (像素), 防止抖动 (最小1px)
@@ -118,6 +122,9 @@ class TrajectoryCalculator:
     def __init__(self):
         self.config = TrajectoryConfig()
 
+        # 神经网络控制器 (延迟初始化)
+        self._nn = None
+
         # 轨迹点历史 (用于前端可视化)
         self._trail_points: List[TrajectoryPoint] = []
 
@@ -160,6 +167,7 @@ class TrajectoryCalculator:
         self._integral_y: float = 0.0
         self._prev_error_x: float = 0.0
         self._prev_error_y: float = 0.0
+        self._prev_dist_for_nn: float = 0.0  # 上一帧误差, 用于 NN 在线训练
 
         # 统计
         self._trajectories_computed: int = 0
@@ -247,6 +255,11 @@ class TrajectoryCalculator:
         scaled_ey = error_y * self.config.y_scale
         distance = math.sqrt(error_x ** 2 + scaled_ey ** 2)
 
+        # ── 神经网络在线训练 (用上一帧误差和当前误差) ──
+        if self.config.nn_mode and self._nn is not None and self._prev_dist_for_nn > 0:
+            self._nn.train_step(distance, self._prev_dist_for_nn)
+        self._prev_dist_for_nn = distance
+
 # ── 滞回死区 (从配置读取) ──
         SETTLE_DEADZONE = self.config.settle_deadzone
         UNSETTLE_HYST = self.config.unsettle_hysteresis
@@ -295,21 +308,40 @@ class TrajectoryCalculator:
         self._prev_error_y = error_y
 
         # ── PID 输出 + 速度前馈 ──
-        kp = self.config.kp
-        ki = self.config.ki
-        kd = self.config.kd
-        output_x = kp * error_x + ki * self._integral_x + kd * deriv_x
-        output_y = (kp * error_y + ki * self._integral_y + kd * deriv_y) * self.config.y_scale
+        if self.config.nn_mode:
+            # 神经网络模式
+            if self._nn is None:
+                from neural_aim import TinyNN
+                self._nn = TinyNN(lr=self.config.nn_lr)
+                logger.info("Neural network controller initialized")
 
-        # 速度前馈: 估计目标移动速度, 主动补偿, 不靠 P 硬追
-        ff = self.config.velocity_ff
-        if ff > 0 and len(self._target_history) >= 3:
-            recent = self._target_history[-3:]
-            vx = recent[-1][0] - recent[0][0]  # 2 帧的总位移
-            vy = recent[-1][1] - recent[0][1]
-            # 除 2 得帧速度, 乘 ff 得补偿量
-            output_x += ff * vx / 2
-            output_y += ff * vy / 2
+            # 估计目标速度
+            vx, vy = 0.0, 0.0
+            if len(self._target_history) >= 3:
+                recent = self._target_history[-3:]
+                vx = (recent[-1][0] - recent[0][0]) / 2
+                vy = (recent[-1][1] - recent[0][1]) / 2
+
+            # NN 前向: [error_x, error_y, vel_x, vel_y] → [dx, dy]
+            inp = np.array([error_x, error_y, vx, vy], dtype=np.float32)
+            nn_out = self._nn.forward(inp)
+            output_x, output_y = float(nn_out[0]), float(nn_out[1])
+        else:
+            # PID 模式
+            kp = self.config.kp
+            ki = self.config.ki
+            kd = self.config.kd
+            output_x = kp * error_x + ki * self._integral_x + kd * deriv_x
+            output_y = (kp * error_y + ki * self._integral_y + kd * deriv_y) * self.config.y_scale
+
+            # 速度前馈
+            ff = self.config.velocity_ff
+            if ff > 0 and len(self._target_history) >= 3:
+                recent = self._target_history[-3:]
+                vx = (recent[-1][0] - recent[0][0]) / 2
+                vy = (recent[-1][1] - recent[0][1]) / 2
+                output_x += ff * vx
+                output_y += ff * vy
 
         # 应用符号反转
         if self.config.invert_ai_x:
