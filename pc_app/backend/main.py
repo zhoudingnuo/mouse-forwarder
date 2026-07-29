@@ -970,6 +970,8 @@ class MouseForwarderBackend:
                     config.ki = float(data['ki'])
                 if 'kd' in data:
                     config.kd = float(data['kd'])
+                if 'velocity_ff' in data:
+                    config.velocity_ff = float(data['velocity_ff'])
                 if 'integral_limit' in data:
                     config.integral_limit = float(data['integral_limit'])
                 if 'max_steps_per_frame' in data:
@@ -998,6 +1000,7 @@ class MouseForwarderBackend:
                 self.config.set('trajectory', 'kp', config.kp)
                 self.config.set('trajectory', 'ki', config.ki)
                 self.config.set('trajectory', 'kd', config.kd)
+                self.config.set('trajectory', 'velocity_ff', config.velocity_ff)
                 self.config.set('trajectory', 'integral_limit', config.integral_limit)
                 self.config.set('trajectory', 'max_steps_per_frame', config.max_steps_per_frame)
                 self.config.set('trajectory', 'settle_deadzone', config.settle_deadzone)
@@ -1022,6 +1025,7 @@ class MouseForwarderBackend:
                         'kp': config.kp,
                         'ki': config.ki,
                         'kd': config.kd,
+                        'velocity_ff': config.velocity_ff,
                         'integral_limit': config.integral_limit,
                         'max_steps_per_frame': config.max_steps_per_frame,
                         'settle_deadzone': config.settle_deadzone,
@@ -1318,6 +1322,7 @@ class MouseForwarderBackend:
                 'kp': c.kp,
                 'ki': c.ki,
                 'kd': c.kd,
+                'velocity_ff': c.velocity_ff,
                 'integral_limit': c.integral_limit,
                 'max_steps_per_frame': c.max_steps_per_frame,
                 'settle_deadzone': c.settle_deadzone,

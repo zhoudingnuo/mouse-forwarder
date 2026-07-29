@@ -174,6 +174,16 @@
             });
         }
 
+        // 速度前馈
+        const sliderFf = document.getElementById('slider-velocityff');
+        const lblFf = document.getElementById('lbl-velocityff');
+        if (sliderFf) {
+            sliderFf.addEventListener('input', () => {
+                if (lblFf) lblFf.textContent = parseFloat(sliderFf.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
         // 积分限幅
         const sliderIntegral = document.getElementById('slider-integral-limit');
         const lblIntegral = document.getElementById('lbl-integral-limit');
@@ -290,6 +300,7 @@
             kp: parseFloat(el('slider-kp')?.value) ?? 0.35,
             ki: parseFloat(el('slider-ki')?.value) ?? 0.02,
             kd: parseFloat(el('slider-kd')?.value) ?? 0.10,
+            velocity_ff: parseFloat(el('slider-velocityff')?.value) ?? 0.00,
             integral_limit: parseFloat(el('slider-integral-limit')?.value) ?? 100,
             max_steps_per_frame: parseInt(el('slider-maxsteps')?.value) ?? 30,
             settle_deadzone: parseFloat(el('slider-deadzone')?.value) ?? 8,
@@ -744,6 +755,13 @@ function onState(data) {
         if (sliderKd && config.kd !== undefined) {
             sliderKd.value = config.kd;
             if (lblKd) lblKd.textContent = config.kd.toFixed(2);
+        }
+        // 速度前馈
+        const sliderFf = document.getElementById('slider-velocityff');
+        const lblFf = document.getElementById('lbl-velocityff');
+        if (sliderFf && config.velocity_ff !== undefined) {
+            sliderFf.value = config.velocity_ff;
+            if (lblFf) lblFf.textContent = config.velocity_ff.toFixed(2);
         }
         // 积分限幅
         const sliderIntegral = document.getElementById('slider-integral-limit');

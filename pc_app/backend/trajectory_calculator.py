@@ -46,6 +46,7 @@ class TrajectoryConfig:
     kp: float = 0.35                    # 比例增益 (直接响应偏移)
     ki: float = 0.02                    # 积分增益 (消除稳态误差, 补偿灵敏度)
     kd: float = 0.10                    # 微分增益 (抑制过冲)
+    velocity_ff: float = 0.0           # 速度前馈 (0=关闭, 0.3=补偿30%目标速度, 配合灵敏度调)
     integral_limit: float = 100.0       # 积分限幅 (防积分饱和)
     max_steps_per_frame: int = 30      # 每帧最多发送的步数
     settle_deadzone: float = 3.0        # 进入死区的阈值 (像素), 目标在此范围内停止移动 (最小1px)
@@ -293,13 +294,22 @@ class TrajectoryCalculator:
         self._prev_error_x = error_x
         self._prev_error_y = error_y
 
-        # ── PID 输出: 只发水平/垂直方向中较大的那个 ──
-        #    当目标已经很近时, 优先消除一个轴, 减少无效移动
+        # ── PID 输出 + 速度前馈 ──
         kp = self.config.kp
         ki = self.config.ki
         kd = self.config.kd
         output_x = kp * error_x + ki * self._integral_x + kd * deriv_x
         output_y = (kp * error_y + ki * self._integral_y + kd * deriv_y) * self.config.y_scale
+
+        # 速度前馈: 估计目标移动速度, 主动补偿, 不靠 P 硬追
+        ff = self.config.velocity_ff
+        if ff > 0 and len(self._target_history) >= 3:
+            recent = self._target_history[-3:]
+            vx = recent[-1][0] - recent[0][0]  # 2 帧的总位移
+            vy = recent[-1][1] - recent[0][1]
+            # 除 2 得帧速度, 乘 ff 得补偿量
+            output_x += ff * vx / 2
+            output_y += ff * vy / 2
 
         # 应用符号反转
         if self.config.invert_ai_x:
