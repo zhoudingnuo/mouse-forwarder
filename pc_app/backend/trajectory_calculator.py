@@ -506,53 +506,37 @@ class TrajectoryCalculator:
 
     def _decompose_movement(self, dx: float, dy: float) -> List[Tuple[int, int]]:
         """
-        将大幅度移动分解为多个微移动
+        将 PID 输出限制为单步 (不再分解为多步)
 
-        每步不超过 max_step_px, 并添加随机抖动
+        每帧只发一步 ( clipped to max_step_px ), 下一帧重新检测后重新计算。
+        避免 AI 预分解的多步与物理鼠标叠加导致过度瞄准。
         """
+        max_step = self.config.max_step_px
         distance = math.sqrt(dx ** 2 + dy ** 2)
         if distance == 0:
             return []
 
-        max_step = self.config.max_step_px
+        # 限幅到单步最大像素
+        if distance > max_step:
+            scale = max_step / distance
+            dx = dx * scale
+            dy = dy * scale
+
+        # 添加随机抖动 (反检测)
         jitter = self.config.jitter_amount
-
-        # 计算需要的步数
-        num_steps = max(1, int(math.ceil(distance / max_step)))
-
-        # 归一化方向向量
-        step_dx = dx / num_steps
-        step_dy = dy / num_steps
-
-        # 目标越近, 抖动越小 (防止近距离抖动)
         near_factor = min(1.0, distance / 50.0)
+        jx = random.uniform(-jitter, jitter) * near_factor
+        jy = random.uniform(-jitter, jitter) * near_factor
+        sdx = dx + jx
+        sdy = dy + jy
 
-        steps = []
-        for i in range(num_steps):
-            # 是否为最后一步 (最后一步不添加抖动, 确保精确)
-            is_last = (i == num_steps - 1)
+        # 舍入为整数
+        sdx_int = max(-127, min(127, int(round(sdx))))
+        sdy_int = max(-127, min(127, int(round(sdy))))
 
-            if is_last:
-                sdx = step_dx
-                sdy = step_dy
-            else:
-                # 添加随机抖动 (反检测), 近距离时抖动衰减
-                jx = random.uniform(-jitter, jitter) * near_factor
-                jy = random.uniform(-jitter, jitter) * near_factor
-                sdx = step_dx + jx
-                sdy = step_dy + jy
-
-            # 舍入为整数 (串口协议要求 int8)
-            sdx_int = max(-127, min(127, int(round(sdx))))
-            sdy_int = max(-127, min(127, int(round(sdy))))
-
-            # 跳过零位移
-            if sdx_int == 0 and sdy_int == 0:
-                continue
-
-            steps.append((sdx_int, sdy_int))
-
-        return steps
+        if sdx_int == 0 and sdy_int == 0:
+            return []
+        return [(sdx_int, sdy_int)]
 
     def _add_trail_point(self, x: float, y: float):
         """添加轨迹点并裁剪"""
