@@ -639,12 +639,11 @@ class MouseForwarderBackend:
         # 射速限制: 距离上次开枪不足 0.5s 则不触发
         now = time.time()
         if in_range and now - self._trigger_last_fire >= 0.5:
-                # 两连发: press-release-press-release
+                # 开火: press → 短暂停顿 → release, 让游戏判为两发
                 self._trigger_armed = True
-                await self._fire_trigger(True, target_dist)   # 第1发按下
-                await self._fire_trigger(False, target_dist)  # 第1发释放
-                await self._fire_trigger(True, target_dist)   # 第2发按下
-                await self._fire_trigger(False, target_dist)  # 第2发释放
+                await self._fire_trigger(True, target_dist)
+                await asyncio.sleep(0.03)  # 30ms 停顿, 游戏判为两连发
+                await self._fire_trigger(False, target_dist)
                 self._trigger_last_fire = now
                 self._trigger_armed = False
 
