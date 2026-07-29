@@ -31,7 +31,7 @@ class TinyNN:
     """
 
     def __init__(self, lr: float = 0.01, y_scale: float = 0.3):
-        # 网络结构: 4 → 8 → 8 → 2
+        # 网络结构: 4 → 8 → 8 → 2 (全线性, 无激活函数)
         # 输入: [error_x, error_y, vel_x, vel_y]
         # 输出: [dx, dy]
         self.lr = lr
@@ -68,26 +68,16 @@ class TinyNN:
         self._cache = {}
 
     def forward(self, x: np.ndarray) -> np.ndarray:
-        """
-        前向推理
-
-        Args:
-            x: [4] = [error_x, error_y, vel_x, vel_y]
-
-        Returns:
-            [2] = [dx, dy]  浮点数, 直接用作鼠标位移
-        """
-        z1 = x @ self.W1 + self.b1  # 第一层线性 (不经过 ReLU, 保留负值)
-        a1 = z1
-        z2 = a1 @ self.W2 + self.b2
-        a2 = np.maximum(z2, 0)  # ReLU 在第二层
-        z3 = a2 @ self.W3 + self.b3
+        """前向推理 (全线性网络, 无 ReLU, 保留正负号)"""
+        z1 = x @ self.W1 + self.b1
+        z2 = z1 @ self.W2 + self.b2
+        z3 = z2 @ self.W3 + self.b3
 
         # NaN/Inf 防护 (权重发散时输出零)
         if not np.all(np.isfinite(z3)):
             z3 = np.zeros_like(z3)
 
-        self._cache = {'x': x, 'z1': z1, 'a1': a1, 'z2': z2, 'a2': a2, 'z3': z3}
+        self._cache = {'x': x, 'z1': z1, 'z2': z2, 'z3': z3}
         return z3  # 输出 (dx, dy)
 
     def train_step(self, error_now: float, error_before: float):
@@ -103,7 +93,8 @@ class TinyNN:
             return
 
         x = cache['x']
-        a2 = cache['a2']
+        z1 = cache['z1']
+        z2 = cache['z2']
         output = cache['z3']
 
         error_x = x[0]  # 当前 error_x
@@ -143,25 +134,22 @@ class TinyNN:
         delta = np.clip(delta, -3.0, 3.0)
         target = output + delta
 
-        # 手动反向传播
-        batch_size = 1
+        # 手动反向传播 (全线性, 无激活函数)
+        dL_dz3 = (output - target)  # [2]
 
-        # 输出层梯度
-        dL_dz3 = (output - target) / batch_size  # [2]
-        dL_dW3 = np.outer(cache['a2'], dL_dz3)  # [8,2]
+        # 输出层
+        dL_dW3 = np.outer(z2, dL_dz3)  # [8,2]
         dL_db3 = dL_dz3  # [2]
 
-        # 隐藏层2 + ReLU
-        dL_da2 = dL_dz3 @ self.W3.T  # [8]
-        dL_dz2 = dL_da2 * (cache['a2'] > 0).astype(float)
-        dL_dW2 = np.outer(cache['a1'], dL_dz2)
-        dL_db2 = dL_dz2
+        # 隐藏层2 (线性)
+        dL_dz2 = dL_dz3 @ self.W3.T  # [8]
+        dL_dW2 = np.outer(z1, dL_dz2)  # [8,8]
+        dL_db2 = dL_dz2  # [8]
 
-        # 隐藏层1 (线性, 无激活)
-        dL_da1 = dL_dz2 @ self.W2.T
-        dL_dz1 = dL_da1  # 线性层导数为1
-        dL_dW1 = np.outer(x, dL_dz1)
-        dL_db1 = dL_dz1
+        # 隐藏层1 (线性)
+        dL_dz1 = dL_dz2 @ self.W2.T  # [8]
+        dL_dW1 = np.outer(x, dL_dz1)  # [4,8]
+        dL_db1 = dL_dz1  # [8]
 
         # SGD 更新 (带梯度裁剪, 防止发散)
         for param, grad in [(self.W1, dL_dW1), (self.b1, dL_db1),
