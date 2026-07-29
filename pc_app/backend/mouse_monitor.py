@@ -230,15 +230,12 @@ class MouseMonitor:
 
         bit = BUTTON_BITS.get(button, 0)
         if bit == 0:
-            logger.info(f"[BTN_UNKNOWN] button={button} pressed={pressed}")
             return  # 不支持的按钮
 
         if pressed:
             self._buttons_state |= bit
         else:
             self._buttons_state &= ~bit
-
-        logger.info(f"[BTN] {button} {'press' if pressed else 'release'} bit={bit} state={self._buttons_state}")
 
         event = MouseEvent(
             buttons=self._buttons_state,

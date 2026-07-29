@@ -1078,10 +1078,6 @@ class MouseForwarderBackend:
         if self._trigger_armed:
             btns |= 1
 
-        # 调试: 记录按钮事件
-        if btns & 0x30:
-            print(f'[QUEUE_PUT] btns={btns} dx={event.dx} dy={event.dy}')
-
         # 放入队列, 由转发线程写入串口 (不阻塞 pynput 回调)
         packet = encode_packet(btns, event.dx, event.dy, event.wheel)
         try:
@@ -1105,8 +1101,6 @@ class MouseForwarderBackend:
         while True:
             try:
                 packet = self._mouse_queue.get(timeout=1)
-                if len(packet) >= 2 and (packet[1] & 0x30):
-                    print(f'[SERIAL_WRITE] flags={packet[1]}')
                 if self.serial.is_connected and self.serial._serial:
                     try:
                         self.serial._serial.write(packet)
