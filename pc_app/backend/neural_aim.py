@@ -94,15 +94,11 @@ class TinyNN:
 
     def train_step(self, error_now: float, error_before: float):
         """
-        在线训练一步
+        在线训练一步 (基于误差方向, 而非误差变化幅度)
 
-        用当前的误差变化来估计"好"的输出方向。
-        如果误差减小 → 强化当前输出方向
-        如果误差增大 → 反向修正
-
-        Args:
-            error_now: 当前帧的误差距离
-            error_before: 上一帧的误差距离
+        - 输出方向正确 (与误差同号) → 微幅增强
+        - 输出方向错误 → 反号
+        - 输出为零 → 补一个最小步长
         """
         cache = self._cache
         if not cache:
@@ -112,27 +108,41 @@ class TinyNN:
         a2 = cache['a2']
         output = cache['z3']
 
-        # 计算"伪标签": 误差减小时加强当前输出, 增大时反转
-        error_delta = error_now - error_before
-        # 强度: 误差变化越大, 学习步长越大
-        intensity = min(1.0, abs(error_delta) / 20.0)
+        error_x = x[0]  # 当前 error_x
+        output_x = output[0]
 
-        if error_delta < 0:
-            # 误差减小 → 当前方向是对的, 加强
-            target = output * (1.0 + intensity * 0.1)
-        elif error_delta > 0:
-            # 误差增大 → 方向可能不对, 减弱或反转
-            if abs(output[0]) > 0.1:
-                target = output * (1.0 - intensity * 0.2)
+        # 计算目标输出方向
+        target = output.copy()
+
+        # X 轴: 根据误差方向调整
+        if abs(error_x) > 2.0:  # 只有误差足够大时才训练
+            sign_error = 1.0 if error_x > 0 else -1.0
+            sign_output = 1.0 if output_x > 0 else -1.0 if output_x < 0 else 0.0
+
+            if sign_output == 0:
+                # 输出为零, 但应该有输出 → 给一个基础步长
+                target[0] = sign_error * max(2.0, abs(error_x) * 0.15)
+            elif sign_output != sign_error:
+                # 方向反了 → 翻转到正确方向
+                target[0] = sign_error * abs(output_x) * 0.8
             else:
-                target = output
-        else:
-            target = output
+                # 方向正确 → 轻微增强 (但不过度)
+                target[0] = output_x * min(1.02, 1.0 + abs(error_x) / 200.0)
+
+        # Y 轴同理 (带 y_scale 限制)
+        if abs(x[1]) > 2.0:
+            sign_err_y = 1.0 if x[1] > 0 else -1.0
+            sign_out_y = 1.0 if output[1] > 0 else -1.0 if output[1] < 0 else 0.0
+            if sign_out_y == 0:
+                target[1] = sign_err_y * max(1.0, abs(x[1]) * 0.15) * self.y_scale
+            elif sign_out_y != sign_err_y:
+                target[1] = sign_err_y * abs(output[1]) * 0.8
+            else:
+                target[1] = output[1] * min(1.02, 1.0 + abs(x[1]) / 200.0)
 
         # 限制目标变化幅度
         delta = target - output
-        max_delta = 2.0
-        delta = np.clip(delta, -max_delta, max_delta)
+        delta = np.clip(delta, -3.0, 3.0)
         target = output + delta
 
         # 手动反向传播
