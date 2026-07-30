@@ -691,6 +691,65 @@ class MouseForwarderBackend:
             })
 
     # ================================================================
+    # PID 自动调参
+    # ================================================================
+
+    async def _auto_tune_pid(self):
+        """自动扫描 kp, 选出最优值"""
+        await self._send({'type': 'auto_tune_status', 'status': 'starting'})
+        logger.info("=== PID Auto-Tune Starting ===")
+
+        old_kp = self.trajectory.config.kp
+        kd_fixed = 0.08
+        ki = 0.0
+
+        kp_values = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45,
+                     0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
+        FRAMES_PER = 600
+        results = []
+
+        for idx, kp in enumerate(kp_values):
+            self.trajectory.config.kp = kp
+            self.trajectory.config.ki = ki
+            self.trajectory.config.kd = kd_fixed
+            logger.info(f'[TUNE] testing kp={kp:.2f} ({idx+1}/{len(kp_values)})')
+            await self._send({
+                'type': 'auto_tune_status',
+                'status': 'testing',
+                'kp': kp,
+                'progress': f'{idx+1}/{len(kp_values)}',
+            })
+
+            errors = []
+            for f in range(FRAMES_PER):
+                await asyncio.sleep(0.001)
+                target = self.trajectory.selected_target
+                if target is not None:
+                    err = abs(self.trajectory.aim_x - self._screen_w / 2)
+                    errors.append(err)
+                if f % 60 == 0 and errors:
+                    logger.info(f'[TUNE]   kp={kp:.2f} f={f} avg_err={np.mean(errors[-60:]):.1f}px')
+
+            avg_err = np.mean(errors) if errors else 999
+            score = max(0, 100 - avg_err * 3)
+            results.append((kp, avg_err, score))
+            logger.info(f'[TUNE]   → kp={kp:.2f} err={avg_err:.1f}px score={score:.0f}')
+
+        best = max(results, key=lambda r: r[2])
+        best_kp, best_err, best_score = best
+        self.trajectory.config.kp = best_kp
+        self.trajectory.config.kd = kd_fixed
+
+        logger.info(f'Best: kp={best_kp:.2f} err={best_err:.1f}px score={best_score}')
+        await self._send({
+            'type': 'auto_tune_result',
+            'best_kp': best_kp,
+            'best_score': best_score,
+            'results': [{'kp': r[0], 'avg_err': round(r[1], 1), 'score': r[2]}
+                        for r in sorted(results, key=lambda x: -x[2])],
+        })
+
+    # ================================================================
     # WebSocket 客户端处理
     # ================================================================
     
@@ -1078,14 +1137,17 @@ class MouseForwarderBackend:
                 self.trajectory.save_log_csv(filepath)
                 await self._send({
                     'type': 'trajectory_log_data',
-                    'path': filepath,
                     'count': len(self.trajectory._log_entries),
                 })
 
             elif msg_type == 'trajectory_log_clear':
                 self.trajectory.clear_log()
                 await self._send({'type': 'trajectory_log_status', 'msg': 'cleared'})
-            
+
+            # --- PID 自动调参 ---
+            elif msg_type == 'auto_tune_pid':
+                asyncio.create_task(self._auto_tune_pid())
+
             # --- 画面显示开关 ---
             elif msg_type == 'toggle_video':
                 self._show_video = data.get('show', not self._show_video)
