@@ -42,7 +42,10 @@ class TinyNN:
         self._train_count = 0
         self._last_status = ''
         self._gain = 0.1
-        self._best_score = 0.0       # 最佳综合得分 (100=完美)
+
+        # 滚动评分: 最近 120 帧的误差历史
+        self._err_history = []
+        self._best_score = 0.0
         self._best_weights = {}
         self._saved_path = ''
         self._cache = {}
@@ -115,17 +118,6 @@ class TinyNN:
         self._train_count += 1
         self._gain = min(1.0, 0.1 + 0.9 * self._train_count / 100000)
 
-        # 评分: 误差得分 + 稳定性惩罚
-        abs_err = abs(error_x)
-        if abs_err <= 5:
-            error_score = 100.0
-        elif abs_err <= 10:
-            error_score = 100.0 - 40.0 * (abs_err - 5) / 5.0  # 100→60
-        elif abs_err <= 30:
-            error_score = 60.0 - 60.0 * (abs_err - 10) / 20.0  # 60→0
-        else:
-            error_score = 0.0
-
         # 震荡检测: 输出方向频繁切换扣分
         if hasattr(self, '_prev_sign') and self._prev_sign != 0:
             curr_sign = 1 if output > 0 else -1 if output < 0 else 0
@@ -135,34 +127,45 @@ class TinyNN:
                 self._osc_count = max(0, getattr(self, '_osc_count', 0) - 2)
         self._prev_sign = 1 if output > 0 else -1 if output < 0 else 0
 
-        osc_penalty = min(30, getattr(self, '_osc_count', 0) * 5)  # 每次震荡扣5分, 最多扣30
-        total_score = max(0, error_score - osc_penalty)
+        # ── 滚动评分: 每 30 帧基于最近 120 帧计算 ──
+        self._err_history.append(abs(error_x))
+        if len(self._err_history) > 120:
+            self._err_history.pop(0)
+        if self._train_count % 30 == 0 and len(self._err_history) >= 30:
+            avg_err = sum(self._err_history) / len(self._err_history)
+            # 评分: 0px→100分, 10px→70分, 20px→40分, 33px→0分
+            score = max(0, 100 - avg_err * 3)
+            # 震荡惩罚: 最近 30 帧内方向切换次数
+            osc_count = getattr(self, '_osc_count', 0)
+            osc_penalty = min(20, osc_count * 2)
+            total_score = max(0, int(score - osc_penalty))
 
-        # 最佳得分 → 备份权重 + 自动保存 (2000步后开始)
-        if self._train_count >= 2000 and total_score > self._best_score:
-            self._best_score = total_score
-            self._best_weights = {
-                'W1': self.W1.copy(), 'b1': self.b1.copy(),
-                'W2': self.W2.copy(), 'b2': self.b2.copy(),
-                'W3': self.W3.copy(), 'b3': self.b3.copy(),
-            }
-            logger.info(f'NN new best score={total_score:.0f} step={self._train_count}')
-            if total_score >= 80 and self._gain > 0.5 and not self._saved_path:
-                save_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'nn_models')
-                os.makedirs(save_dir, exist_ok=True)
-                path = os.path.join(save_dir, f'nn_best_{self._train_count}s_{total_score:.0f}score.npz')
-                self.save(path)
-                self._saved_path = path
-                logger.info(f'✅ NN saved {path}')
+            # 最佳得分 → 备份权重 + 自动保存 (2000步后)
+            if self._train_count >= 2000 and total_score > self._best_score:
+                self._best_score = total_score
+                self._best_weights = {
+                    'W1': self.W1.copy(), 'b1': self.b1.copy(),
+                    'W2': self.W2.copy(), 'b2': self.b2.copy(),
+                    'W3': self.W3.copy(), 'b3': self.b3.copy(),
+                }
+                logger.info(f'NN new best score={total_score} step={self._train_count} '
+                           f'avg_err={avg_err:.1f}px osc={osc_count}')
+                if total_score >= 75 and self._gain > 0.5 and not self._saved_path:
+                    save_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'nn_models')
+                    os.makedirs(save_dir, exist_ok=True)
+                    path = os.path.join(save_dir, f'nn_best_{self._train_count}s_{total_score}sc.npz')
+                    self.save(path)
+                    self._saved_path = path
+                    logger.info(f'✅ NN saved {path}')
 
+        # 每 30 帧更新状态日志
         if self._train_count % 30 == 0:
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
-            self._last_status = (f'🧠 train={self._train_count} gain={self._gain:.2f} '
-                                 f'score={total_score:.0f} best={self._best_score:.0f} '
-                                 f'osc={getattr(self, "_osc_count", 0)} '
-                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f} '
-                                 f'prev={self._prev_dx_clamped:.0f}')
+            avg_e = sum(self._err_history[-30:]) / min(30, len(self._err_history)) if self._err_history else 0
+            self._last_status = (f'🧠 {self._train_count}s gain={self._gain:.2f} '
+                                 f'err={avg_e:.0f}px score={self._best_score:.0f} '
+                                 f'|W|={w3_mean:.2f}')
 
     def get_stats(self) -> dict:
         return {
