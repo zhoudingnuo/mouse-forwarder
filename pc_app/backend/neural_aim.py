@@ -19,7 +19,8 @@ class TinyNN:
     def __init__(self, lr: float = 0.01, max_step_px: float = 10.0):
         self.lr = lr
         self.max_step_px = max_step_px
-        self._prev_dx = 0.0  # 上一步输出
+        self._prev_dx = 0.0
+        self._prev_dx_clamped = 0.0  # 限幅后的上一步输出
 
         # 网络: 3 → 6 → 6 → 1 (全线性)
         # P型初始化: dx ≈ 0.25*error_x + 0.1*vel_x + 0.1*prev_dx
@@ -49,7 +50,7 @@ class TinyNN:
 
     def forward(self, x: np.ndarray) -> float:
         """前向: [error_x, vel_x] → dx (自动带上 prev_dx)"""
-        x3 = np.array([x[0], x[1], self._prev_dx], dtype=np.float32)
+        x3 = np.array([x[0], x[1], self._prev_dx_clamped], dtype=np.float32)
         z1 = x3 @ self.W1 + self.b1
         z2 = z1 @ self.W2 + self.b2
         z3 = float(z2 @ self.W3 + self.b3) * self._gain
@@ -70,8 +71,9 @@ class TinyNN:
         z2 = cache['z2']
         output = cache['z3']
 
-        # 保存上一步输出供下一帧使用
+        # 保存上一步输出 (限幅, 防止爆炸)
         self._prev_dx = output
+        self._prev_dx_clamped = max(-30.0, min(30.0, output))  # 不超过 ±30px
 
         # 训练目标
         target = output
@@ -118,7 +120,7 @@ class TinyNN:
         self._error_history.append(abs(error_x))
         if len(self._error_history) > 60:
             self._error_history.pop(0)
-        if self._train_count >= 60:
+        if self._train_count >= 2000:  # 等模型稳定后再评估
             avg_err = sum(self._error_history) / len(self._error_history)
             if avg_err < self._best_avg_error:
                 self._best_avg_error = avg_err
