@@ -703,9 +703,8 @@ class MouseForwarderBackend:
         kd_fixed = 0.08
         ki = 0.0
 
-        kp_values = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45,
-                     0.5, 0.55, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
-        FRAMES_PER = 600
+        kp_values = [round(0.1 + i * 0.01, 2) for i in range(71)]  # 0.10~0.80 步长0.01
+        FRAMES_PER = 300  # ~5秒/组, 共71组≈6分钟
         results = []
 
         for idx, kp in enumerate(kp_values):
