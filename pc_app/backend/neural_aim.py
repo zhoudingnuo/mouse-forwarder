@@ -1,14 +1,11 @@
 """
-neural_aim.py - 在线学习神经网络瞄准模块 (X轴单输出)
-
-替代 PID 控制器, 实时学习游戏灵敏度、延迟等非线性特性。
-只输出 X 轴 (左右), 适合跟踪左右平移的 bot。
+neural_aim.py - 在线学习神经网络瞄准模块 (X轴单输出 + 历史步数)
 
 架构:
-  输入 (2): error_x, vel_x
-  → 全连接4 → ReLU → 全连接4 → ReLU → 全连接1 → 输出 (dx)
+  输入 (3): error_x, vel_x, prev_dx (上一步输出)
+  → 全连接6 → 全连接6 → 全连接1 → 输出 dx
 
-参数量: 2×4 + 4 + 4×4 + 4 + 4×1 + 1 = 8+4+16+4+4+1 = 37
+参数: 3×6+6 + 6×6+6 + 6×1+1 = 24+42+7 = 73
 """
 
 import logging
@@ -19,86 +16,64 @@ logger = logging.getLogger(__name__)
 
 
 class TinyNN:
-    """
-    微型神经网络, 在线学习瞄准映射 (X轴单输出)
-
-    37 个参数, 推理 < 0.01ms
-    """
-
     def __init__(self, lr: float = 0.01, max_step_px: float = 10.0):
         self.lr = lr
         self.max_step_px = max_step_px
+        self._prev_dx = 0.0  # 上一步输出
 
-        # 网络: 2 → 4 → 4 → 1
-        # P型初始化: dx ≈ 0.25 * error_x
-        self.W1 = np.array([[1.0, 0.5, 0.0, 0.0],   # error_x → hidden 0,1
-                            [0.0, 0.0, 0.5, 0.25]])  # vel_x   → hidden 2,3
-        self.b1 = np.zeros(4)
+        # 网络: 3 → 6 → 6 → 1 (全线性)
+        # P型初始化: dx ≈ 0.25*error_x + 0.1*vel_x + 0.1*prev_dx
+        self.W1 = np.zeros((3, 6))
+        self.W1[0, :3] = [1.0, 0.5, 0.3]   # error_x
+        self.W1[1, 3:5] = [0.5, 0.3]       # vel_x
+        self.W1[2, 5] = 0.3                 # prev_dx
+        self.b1 = np.zeros(6)
 
-        self.W2 = np.eye(4) * 0.5
-        self.W2[0, 1] = 0.2
-        self.b2 = np.zeros(4)
+        self.W2 = np.eye(6) * 0.5
+        self.W2[0, 3] = 0.2
+        self.W2[3, 0] = 0.2
+        self.W2[1, 5] = 0.1
+        self.b2 = np.zeros(6)
 
-        self.W3 = np.array([0.5, 0.3, 0.0, 0.0])  # [4] → 标量输出
+        self.W3 = np.array([0.5, 0.3, 0.2, 0.0, 0.0, 0.0])  # [6]
         self.b3 = np.array([0.0])
 
-        # 训练状态
         self._train_count = 0
-        self._last_status: str = ''
+        self._last_status = ''
         self._gain = 0.1
-
-        # 性能评估
-        self._error_history: list = []
-        self._best_avg_error: float = 1e9
-        self._best_weights: dict = {}
-        self._saved_path: str = ''
-
-        # 缓存 (用于反向传播)
+        self._error_history = []
+        self._best_avg_error = 1e9
+        self._best_weights = {}
+        self._saved_path = ''
         self._cache = {}
 
     def forward(self, x: np.ndarray) -> float:
-        """
-        前向推理
+        """前向: [error_x, vel_x] → dx (自动带上 prev_dx)"""
+        x3 = np.array([x[0], x[1], self._prev_dx], dtype=np.float32)
+        z1 = x3 @ self.W1 + self.b1
+        z2 = z1 @ self.W2 + self.b2
+        z3 = float(z2 @ self.W3 + self.b3) * self._gain
 
-        Args:
-            x: [2] = [error_x, vel_x]
-
-        Returns:
-            dx (float)
-        """
-        z1 = x @ self.W1 + self.b1  # 线性
-        z2 = z1 @ self.W2 + self.b2  # 线性
-        z3 = float(z2 @ self.W3 + self.b3)
-
-        # 输出增益
-        z3 = z3 * self._gain
-
-        # NaN 防护
         if not np.isfinite(z3):
             z3 = 0.0
 
-        self._cache = {'x': x, 'z1': z1, 'z2': z2, 'z3': z3}
+        self._cache = {'x3': x3, 'z1': z1, 'z2': z2, 'z3': z3}
         return z3
 
     def train_step(self, error_x: float):
-        """
-        在线训练一步
-
-        用当前误差方向和大小调整权重。
-
-        Args:
-            error_x: 当前帧的水平误差
-        """
         cache = self._cache
         if not cache:
             return
 
-        x = cache['x']
-        a1 = cache['a1']
-        a2 = cache['a2']
+        x3 = cache['x3']
+        z1 = cache['z1']
+        z2 = cache['z2']
         output = cache['z3']
 
-        # 计算目标输出
+        # 保存上一步输出供下一帧使用
+        self._prev_dx = output
+
+        # 训练目标
         target = output
         if abs(error_x) > 2.0:
             sign_err = 1.0 if error_x > 0 else -1.0
@@ -111,38 +86,35 @@ class TinyNN:
             else:
                 target = output * min(1.003, 1.0 + abs(error_x) / 2000.0)
 
-        # 限幅
         delta = target - output
         delta = max(-3.0, min(3.0, delta))
         target = output + delta
 
         # 反向传播 (全线性)
-        dL_dz3 = output - target  # 标量
-        dL_dW3 = z2 * dL_dz3  # [4]
+        dL_dz3 = output - target
+        dL_dW3 = z2 * dL_dz3
         dL_db3 = dL_dz3
 
-        dL_dz2 = dL_dz3 * self.W3  # [4] (线性, 无激活)
-        dL_dW2 = np.outer(z1, dL_dz2)  # [4,4]
-        dL_db2 = dL_dz2  # [4]
+        dL_dz2 = dL_dz3 * self.W3
+        dL_dW2 = np.outer(z1, dL_dz2)
+        dL_db2 = dL_dz2
 
-        dL_dz1 = dL_dz2 @ self.W2.T  # [4] (线性)
-        dL_dW1 = np.outer(x, dL_dz1)  # [2,4]
-        dL_db1 = dL_dz1  # [4]
+        dL_dz1 = dL_dz2 @ self.W2.T
+        dL_dW1 = np.outer(x3, dL_dz1)
+        dL_db1 = dL_dz1
 
-        # SGD 更新 + 梯度裁剪
         for param, grad in [(self.W1, dL_dW1), (self.b1, dL_db1),
                             (self.W2, dL_dW2), (self.b2, dL_db2),
                             (self.W3, dL_dW3), (self.b3, dL_db3)]:
             param -= self.lr * np.clip(grad, -0.5, 0.5)
 
-        # 权重裁剪
         for param in [self.W1, self.W2, self.W3]:
             np.clip(param, -5.0, 5.0, out=param)
 
         self._train_count += 1
         self._gain = min(1.0, 0.1 + 0.9 * self._train_count / 100000)
 
-        # 性能评估
+        # 性能
         self._error_history.append(abs(error_x))
         if len(self._error_history) > 60:
             self._error_history.pop(0)
@@ -164,14 +136,14 @@ class TinyNN:
                     self._saved_path = path
                     logger.info(f'✅ NN saved {path}')
 
-        # 每 30 帧打印状态
         if self._train_count % 30 == 0:
             w1_mean = np.abs(self.W1).mean()
             w3_mean = np.abs(self.W3).mean()
             avg_e = sum(self._error_history) / max(1, len(self._error_history))
             self._last_status = (f'🧠 train={self._train_count} gain={self._gain:.2f} '
                                  f'avg_err={avg_e:.1f}px best={self._best_avg_error:.1f}px '
-                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f}')
+                                 f'|W1|={w1_mean:.2f} |W3|={w3_mean:.2f} '
+                                 f'prev={self._prev_dx:.1f}')
 
     def get_stats(self) -> dict:
         avg_err = sum(self._error_history) / max(1, len(self._error_history)) if self._error_history else 0
