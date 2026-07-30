@@ -168,6 +168,17 @@
             });
         }
 
+        // 自动调参按钮
+        const btnAutoTune = document.getElementById('btn-auto-tune');
+        if (btnAutoTune) {
+            btnAutoTune.addEventListener('click', () => {
+                btnAutoTune.textContent = '⏳ 调参中...';
+                btnAutoTune.disabled = true;
+                settings.addLog('自动调参开始 (~6分钟)...', 'info');
+                ws.send({ type: 'auto_tune_pid' });
+            });
+        }
+
         // PID: Ki
         const sliderKi = document.getElementById('slider-ki');
         const lblKi = document.getElementById('lbl-ki');
@@ -581,6 +592,22 @@
             capturePanel.onTrajectoryCleared();
             if (mousePanel) mousePanel.clearTrail();
             settings.addLog('后端轨迹已清空', 'info');
+        });
+
+        // 自动调参结果
+        ws.on('auto_tune_result', (data) => {
+            const btn = document.getElementById('btn-auto-tune');
+            if (btn) {
+                btn.textContent = '🔍 自动调参 (~6min)';
+                btn.disabled = false;
+            }
+            settings.addLog(`✅ 调参完成! 最优 kp=${data.best_kp} (得分=${data.best_score})`, 'ok');
+            // 显示前5名
+            if (data.results) {
+                data.results.slice(0, 5).forEach((r, i) => {
+                    settings.addLog(`  #${i+1}: kp=${r.kp} err=${r.avg_err}px score=${r.score}`, 'info');
+                });
+            }
         });
 
         // 检测帧数据 (包含 JPEG 帧和检测结果)
