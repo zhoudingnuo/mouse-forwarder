@@ -38,6 +38,9 @@ DEFAULT_CONFIG = {
     },
     'video': {
         'show_video': True,
+        'capture_width': 1920,
+        'capture_height': 1080,
+        'capture_fps': 240,
     },
     'screen': {
         'target_w': 2560,

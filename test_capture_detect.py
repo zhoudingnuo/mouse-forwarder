@@ -11,6 +11,8 @@ test_capture_detect.py - 截图采集卡画面并调用 ONNX 模型检测
 import sys
 import os
 import time
+import re
+import subprocess
 import numpy as np
 import cv2
 
@@ -21,9 +23,48 @@ sys.path.insert(0, os.path.join(ROOT, 'pc_app', 'backend'))
 MODEL_PATH = os.path.join(ROOT, 'valorant.onnx')
 
 
+# 采集卡设备名关键词（按优先级）
+CAPTURE_CARD_KEYWORDS = [
+    # AVerMedia 采集卡
+    ['avermedia', 'gamer', 'ultra', 'live'],
+    # MS2130 采集卡
+    ['ms2130', 'usb3.0'],
+]
+
+
+def list_dshow_video_devices():
+    """用 ffmpeg 枚举 DirectShow 视频设备名（按顺序，与 OpenCV 索引一致）"""
+    try:
+        r = subprocess.run(
+            ['ffmpeg', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=10)
+        devices = []
+        for line in r.stderr.split('\n'):
+            m = re.search(r'"([^"]+)" \(video\)', line)
+            if m:
+                devices.append(m.group(1))
+        return devices
+    except Exception:
+        return []
+
+
 def find_capture_card():
-    """查找 MS2130 采集卡 (跳过 index 0 的内置摄像头)"""
-    print("Searching for MS2130 capture card...")
+    """查找采集卡 (AVerMedia/MS2130)，按设备名称匹配，跳过内置摄像头"""
+    print("Searching for capture card...")
+
+    # 1. 按设备名称匹配
+    devices = list_dshow_video_devices()
+    if devices:
+        for i, name in enumerate(devices):
+            lower = name.lower()
+            for kw in CAPTURE_CARD_KEYWORDS:
+                if any(k in lower for k in kw):
+                    print(f"  Found capture card: [{i}] {name}")
+                    return i
+        print(f"  No capture card by name, devices: {devices}")
+
+    # 2. 按索引扫描回退 (尝试 720p)
     for idx in [1, 2, 8, 3, 4, 5, 6, 7, 9]:
         try:
             cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
@@ -34,7 +75,7 @@ def find_capture_card():
             if not ret or frame is None:
                 cap.release()
                 continue
-            # 尝试 720p - MS2130 支持
+            # 尝试 720p
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             for _ in range(3):
@@ -45,13 +86,13 @@ def find_capture_card():
             cap.release()
             time.sleep(0.1)
             if w >= 1280:
-                print(f"  Found MS2130 at index {idx} ({w}x{h})")
+                print(f"  Found capture card at index {idx} ({w}x{h})")
                 return idx
-            print(f"  Camera {idx}: {w}x{h} (not MS2130)")
+            print(f"  Camera {idx}: {w}x{h} (not capture card)")
         except Exception as e:
             print(f"  Camera {idx} error: {e}")
     # 回退
-    print("No MS2130 found, trying index 1")
+    print("No capture card found, trying index 1")
     return 1
 
 

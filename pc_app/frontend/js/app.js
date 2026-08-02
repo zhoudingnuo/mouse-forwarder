@@ -87,6 +87,17 @@
             });
         }
 
+        // 按住左键才自瞄开关
+        const chkAimLmb = document.getElementById('chk-aim-lmb');
+        if (chkAimLmb) {
+            chkAimLmb.addEventListener('change', () => {
+                ws.send({ type: 'aim_require_lmb', enabled: chkAimLmb.checked });
+                if (settings) {
+                    settings.addLog(chkAimLmb.checked ? '自瞄模式: 按住左键才自瞄' : '自瞄模式: 一直自瞄', 'info');
+                }
+            });
+        }
+
         // 平滑度滑块
         const sliderSmooth = document.getElementById('slider-smooth');
         const lblSmooth = document.getElementById('lbl-smooth');
@@ -449,11 +460,28 @@
 
             if (data.running) {
                 settings.addLog(`采集卡已启动 (Camera ${data.camera_index})`, 'ok');
+                // 更新格式按钮
+                if (data.format && capturePanel.btnFormatToggle) {
+                    capturePanel._captureFormat = data.format;
+                    capturePanel.btnFormatToggle.textContent = `格式: ${data.format.toUpperCase()}`;
+                }
             } else {
                 if (data.error) {
                     settings.addLog(`采集卡错误: ${data.error}`, 'err');
                 } else {
                     settings.addLog('采集卡已停止', 'info');
+                }
+            }
+        });
+
+        // 采集格式切换响应
+        ws.on('capture_format', (data) => {
+            if (data.error) {
+                settings.addLog(`格式切换失败: ${data.error}`, 'err');
+            } else {
+                settings.addLog(data.message, 'info');
+                if (data.restart_required) {
+                    settings.addLog('请停止并重新启动采集卡以应用新格式', 'warn');
                 }
             }
         });
@@ -657,6 +685,11 @@ function onState(data) {
             if (btn) {
                 btn.textContent = data.trajectory.enabled ? '禁用轨迹' : '启用轨迹';
                 btn.className = data.trajectory.enabled ? 'btn primary' : 'btn';
+            }
+            // 同步"按住左键才自瞄"开关
+            const chkAimLmb = document.getElementById('chk-aim-lmb');
+            if (chkAimLmb && data.trajectory.aim_require_lmb !== undefined) {
+                chkAimLmb.checked = data.trajectory.aim_require_lmb;
             }
         }
         // 锁定模式状态

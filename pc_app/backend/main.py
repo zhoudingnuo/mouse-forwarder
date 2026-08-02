@@ -96,6 +96,9 @@ class MouseForwarderBackend:
         # 两连发间隔: 匹配 9.75发/秒 射速, 每发 ~102ms
         self._trigger_burst_interval = 0.102  # 两发之间的间隔
 
+        # 按住左键才自瞄 (False = 一直自瞄)
+        self._aim_require_lmb = bool(self.config.get('trajectory', 'aim_require_lmb', default=False))
+
         # 从持久化配置恢复轨迹参数
         traj_cfg = self.config.get('trajectory', default={})
         if traj_cfg:
@@ -292,10 +295,10 @@ class MouseForwarderBackend:
 
             await asyncio.sleep(1)  # 额外等前端就绪
             logger.info("Auto-starting capture card...")
-            # 自动检测 MS2130 采集卡索引
+            # 自动检测采集卡索引 (AVerMedia/MS2130)
             try:
                 from capture_card import CaptureCard
-                ms2130_idx = await asyncio.to_thread(CaptureCard.find_ms2130)
+                ms2130_idx = await asyncio.to_thread(CaptureCard.find_capture_card)
                 logger.info(f"Auto-detected capture card at index {ms2130_idx}")
             except Exception as e:
                 logger.warning(f"Auto-detect failed: {e}, using index 0")
@@ -309,7 +312,14 @@ class MouseForwarderBackend:
         try:
             if not self.capture_card:
                 from capture_card import CaptureCard
-                self.capture_card = CaptureCard(camera_index=camera_index)
+                # 从配置读取采集参数 (分辨率/帧率)
+                vcfg = self.config.get('video', default={})
+                self.capture_card = CaptureCard(
+                    camera_index=camera_index,
+                    target_fps=int(vcfg.get('capture_fps', 240)),
+                )
+                self.capture_card._target_width = int(vcfg.get('capture_width', 1920))
+                self.capture_card._target_height = int(vcfg.get('capture_height', 1080))
             
             self.capture_card.set_camera_index(camera_index)
             logger.info(f"Starting capture on camera {camera_index}...")
@@ -323,6 +333,7 @@ class MouseForwarderBackend:
                     'type': 'capture_status',
                     'running': True,
                     'camera_index': camera_index,
+                    'format': self.capture_card.capture_format if self.capture_card else 'mjpeg',
                 })
                 logger.info(f"Capture started on camera {camera_index}")
             else:
@@ -567,6 +578,10 @@ class MouseForwarderBackend:
                 await self._check_auto_trigger(detections)
 
                 # AI 轨迹独立发送 (步间 1ms 间隔, 在帧空闲时间内发完)
+                # 如果开启了"按住左键才自瞄", 且左键未按下 -> 跳过
+                lmb_down = bool(self.mouse._buttons_state & 1)
+                if self._aim_require_lmb and not lmb_down:
+                    ai_steps = []
                 if ai_steps and self._trajectory_enabled and self.serial.is_connected:
                     btns = self.mouse._buttons_state
                     if self._trigger_armed:
@@ -809,7 +824,6 @@ class MouseForwarderBackend:
             elif msg_type == 'list_cameras':
                 try:
                     from capture_card import CaptureCard
-                    # 使用 run_in_executor 避免阻塞事件循环
                     cameras = await asyncio.to_thread(CaptureCard.list_cameras)
                     cam_list = [{'index': c[0], 'name': c[1], 'is_ms2130': c[2]} for c in cameras]
                 except Exception as e:
@@ -819,6 +833,33 @@ class MouseForwarderBackend:
                     'type': 'camera_list',
                     'cameras': cam_list,
                 })
+
+            # --- 采集格式切换 ---
+            elif msg_type == 'set_capture_format':
+                fmt = data.get('format', 'mjpeg')
+                if self.capture_card:
+                    self.capture_card.set_format(fmt)
+                    # 如果采集正在运行, 需要重启生效
+                    if self._capture_active:
+                        await self._send({
+                            'type': 'capture_format',
+                            'format': fmt,
+                            'restart_required': True,
+                            'message': f'格式已设为 {fmt.upper()}, 需重启采集卡生效'
+                        })
+                    else:
+                        await self._send({
+                            'type': 'capture_format',
+                            'format': fmt,
+                            'restart_required': False,
+                            'message': f'格式已设为 {fmt.upper()}, 下次启动生效'
+                        })
+                else:
+                    await self._send({
+                        'type': 'capture_format',
+                        'format': fmt,
+                        'error': '采集卡未初始化'
+                    })
 
             # --- 模型管理 ---
             elif msg_type == 'list_models':
@@ -931,6 +972,15 @@ class MouseForwarderBackend:
                 await self._send({
                     'type': 'trajectory_status',
                     'enabled': False,
+                })
+
+            elif msg_type == 'aim_require_lmb':
+                self._aim_require_lmb = bool(data.get('enabled', False))
+                self.config.set('trajectory', 'aim_require_lmb', self._aim_require_lmb)
+                logger.info(f"Aim requires LMB: {self._aim_require_lmb}")
+                await self._send({
+                    'type': 'aim_require_lmb_status',
+                    'enabled': self._aim_require_lmb,
                 })
             
             elif msg_type == 'trajectory_config':
@@ -1302,6 +1352,7 @@ class MouseForwarderBackend:
                 'enabled': self._trajectory_enabled,
                 'capture_active': self._capture_active,
                 'model_loaded': self.detector.is_loaded if self.detector else False,
+                'aim_require_lmb': self._aim_require_lmb,
             },
             'lock_mode': self._lock_mode,
             # 当前配置 (前端用于同步滑块)

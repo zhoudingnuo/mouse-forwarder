@@ -18,6 +18,7 @@ class CapturePanel {
         this.btnToggleVideo = document.getElementById('btn-toggle-video');
         this.cameraSelect = document.getElementById('camera-select');
         this.btnRefreshCams = document.getElementById('btn-refresh-cameras');
+        this.btnFormatToggle = document.getElementById('btn-format-toggle');
         this.captureStatus = document.getElementById('capture-status');
         this.captureDetections = document.getElementById('capture-detections');
         this.captureInference = document.getElementById('capture-inference');
@@ -36,6 +37,7 @@ class CapturePanel {
         this._captureActive = false;
         this._trajectoryEnabled = false;
         this._showVideo = true;
+        this._captureFormat = 'yuv';
         this._frameWidth = 0;
         this._frameHeight = 0;
         this._lastDetections = [];
@@ -105,6 +107,16 @@ class CapturePanel {
         if (this.btnRefreshCams) {
             this.btnRefreshCams.addEventListener('click', () => {
                 this._sendCommand('list_cameras');
+            });
+        }
+
+        // 采集格式切换 (MJPEG ↔ YUV422)
+        if (this.btnFormatToggle) {
+            this.btnFormatToggle.addEventListener('click', () => {
+                const newFmt = this._captureFormat === 'mjpeg' ? 'yuv' : 'mjpeg';
+                this._captureFormat = newFmt;
+                this.btnFormatToggle.textContent = `格式: ${newFmt.toUpperCase()}`;
+                this._sendCommand('set_capture_format', { format: newFmt });
             });
         }
 

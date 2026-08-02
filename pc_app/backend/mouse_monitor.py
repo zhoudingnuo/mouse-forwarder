@@ -60,6 +60,9 @@ class MouseMonitor:
         self._prev_y: Optional[int] = None
         self._buttons_state = 0
         self._skip_move = False  # 跳过下一个移动事件 (SetCursorPos 回弹)
+        # 上一步有效移动 (大位移/回中时沿用, 保持自瞄连续)
+        self._last_dx = 0
+        self._last_dy = 0
 
         # 屏幕尺寸 (用于检测光标环绕跳边)
         self._screen_w, self._screen_h = self._get_screen_size()
@@ -190,24 +193,55 @@ class MouseMonitor:
         if self._listener and self._listener._suppress:
             self._listener._suppress = False
 
-        # 跳过 SetCursorPos 回弹事件 (不转发, 不更新 _prev_x/y)
+        # SetCursorPos 回中: 不转发回中位移, 但沿用上一步操作保持自瞄连续
         if self._skip_move:
             self._skip_move = False
+            # 沿用上一步有效移动 (AI 自瞄方向连续)
+            if self._last_dx != 0 or self._last_dy != 0:
+                event = MouseEvent(
+                    buttons=self._buttons_state,
+                    dx=self._last_dx,
+                    dy=self._last_dy,
+                    left=bool(self._buttons_state & 1),
+                    right=bool(self._buttons_state & 2),
+                    middle=bool(self._buttons_state & 4),
+                    back=bool(self._buttons_state & 8),
+                    forward=bool(self._buttons_state & 16),
+                )
+                self._emit_event(event)
+            # 更新基准位置 (避免后续产生虚假大位移)
+            self._prev_x = x
+            self._prev_y = y
             return
 
         if self._prev_x is not None and self._prev_y is not None:
             dx = x - self._prev_x
             dy = y - self._prev_y
 
-            # 检测光标环绕跳边: 大幅跳跃超过屏幕尺寸一半
+            # 大位移 (光标环绕/回中跳变): 不丢弃, 沿用上一步操作
             if abs(dx) > self._screen_w // 2 or abs(dy) > self._screen_h // 2:
-                logger.debug(f"Cursor wrap detected: dx={dx}, dy={dy}, ignoring")
+                logger.debug(f"Cursor wrap detected: dx={dx}, dy={dy}, reusing last move")
+                if self._last_dx != 0 or self._last_dy != 0:
+                    event = MouseEvent(
+                        buttons=self._buttons_state,
+                        dx=self._last_dx,
+                        dy=self._last_dy,
+                        left=bool(self._buttons_state & 1),
+                        right=bool(self._buttons_state & 2),
+                        middle=bool(self._buttons_state & 4),
+                        back=bool(self._buttons_state & 8),
+                        forward=bool(self._buttons_state & 16),
+                    )
+                    self._emit_event(event)
                 self._prev_x = x
                 self._prev_y = y
                 return
 
             # 只发送有实际位移的事件
             if dx != 0 or dy != 0:
+                # 记录上一步有效移动 (供大位移时沿用)
+                self._last_dx = dx
+                self._last_dy = dy
                 event = MouseEvent(
                     buttons=self._buttons_state,
                     dx=dx,

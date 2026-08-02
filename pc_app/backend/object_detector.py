@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 class ObjectDetector:
-    """目标检测器 (valorant.onnx, center crop 256×256)"""
+    """目标检测器 (支持任意 ONNX YOLO 模型, 动态读取输入尺寸/类别)"""
 
     CONFIDENCE_THRESHOLD = 0.25
     NMS_IOU_THRESHOLD = 0.45
     MAX_DETECTIONS = 50
 
-    INPUT_SIZE = 256          # 模型输入尺寸 = 裁剪尺寸
+    INPUT_SIZE = 256          # 模型输入尺寸 (加载时从模型覆盖)
     MODEL_PATH = 'valorant.onnx'
 
-    # 类别名称 (valorant.onnx metadata: body, head, teammate, breakable, dodge)
+    # 默认类别名称 (加载时从模型 metadata 覆盖)
     CLASS_NAMES = ['body', 'head', 'teammate', 'breakable', 'dodge']
 
     def __init__(self):
@@ -39,6 +39,7 @@ class ObjectDetector:
         self._inference_time = 0.0
         self._inference_count = 0
         self._crop_offset = (0, 0)
+        self._num_classes = len(self.CLASS_NAMES)
 
     @property
     def is_loaded(self) -> bool:
@@ -47,6 +48,14 @@ class ObjectDetector:
     @property
     def model_path(self) -> Optional[str]:
         return self._model_path
+
+    @property
+    def class_names(self) -> list:
+        return self.CLASS_NAMES
+
+    @property
+    def input_size(self) -> int:
+        return self.INPUT_SIZE
 
     @property
     def avg_inference_time_ms(self) -> float:
@@ -80,6 +89,36 @@ class ObjectDetector:
             logger.info(f"  Input: {inp.name} -> {inp.shape}")
         for out in self._session.get_outputs():
             logger.info(f"  Output: {out.name} -> {out.shape}")
+
+        # 动态适配模型参数 (输入尺寸 / 类别数 / 类别名)
+        try:
+            # 1. 输入尺寸: [1, 3, H, W]
+            in_shape = self._session.get_inputs()[0].shape
+            if len(in_shape) == 4 and in_shape[2] and in_shape[3]:
+                self.INPUT_SIZE = int(in_shape[2])
+                logger.info(f"  Input size: {self.INPUT_SIZE}x{self.INPUT_SIZE}")
+
+            # 2. 类别数: 输出通道数 - 4 (cx, cy, w, h)
+            out_shape = self._session.get_outputs()[0].shape
+            if len(out_shape) == 3:
+                channels = int(out_shape[1])
+                self._num_classes = channels - 4
+                logger.info(f"  Classes: {self._num_classes}")
+
+            # 3. 类别名: 从模型 metadata 读取
+            import onnx
+            onnx_model = onnx.load(model_path)
+            for entry in onnx_model.metadata_props:
+                if entry.key == 'names':
+                    names = eval(entry.value)  # {0: 'name', 1: 'name', ...}
+                    if isinstance(names, dict):
+                        sorted_names = [names[k] for k in sorted(names.keys())]
+                        if len(sorted_names) == self._num_classes:
+                            self.CLASS_NAMES = sorted_names
+                            logger.info(f"  Class names: {self.CLASS_NAMES}")
+                    break
+        except Exception as e:
+            logger.warning(f"Model param detection failed (using defaults): {e}")
 
     def detect(self, frame: np.ndarray, original_shape: Optional[tuple] = None) -> List[Detection]:
         if not self._loaded:
@@ -116,12 +155,12 @@ class ObjectDetector:
 
         # 推理
         outputs = self._session.run(['output0'], {'images': input_tensor})
-        output = np.squeeze(outputs[0], axis=0)  # [9, 1344]
+        output = np.squeeze(outputs[0], axis=0)  # [4+num_cls, anchors]
 
-        # 解析: ch0-3 bbox, ch4-8 cls(已sigmoid)
+        # 解析: ch0-3 bbox, ch4+ cls
         cx = output[0, :]; cy = output[1, :]
         w = output[2, :]; h = output[3, :]
-        cls_scores = output[4:9, :]  # [5, 1344]
+        cls_scores = output[4:4 + self._num_classes, :]
         conf = np.max(cls_scores, axis=0)
         cls_ids = np.argmax(cls_scores, axis=0)
 
