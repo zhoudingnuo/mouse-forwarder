@@ -95,6 +95,8 @@ class CaptureCard:
         self._actual_height = 0
         # 帧序号 (采集线程自增) + 采集时刻 (用于去重和延迟分析)
         self._frame_seq = 0
+        # 消费端最近读到的帧序号 (背压控制: 采集端避免超前转换浪费 CPU)
+        self._last_consumed_seq = -1
         self._frame_ts = 0.0
         # 采集实际帧率统计
         self._fps = 0.0
@@ -479,6 +481,8 @@ class CaptureCard:
         主循环处理期间, 捕获线程写入另一个缓冲区,
         处理速度跟不上时才会覆盖。
         """
+        # 记录消费进度 (背压控制用: 采集端据此判断是否需要放慢)
+        self._last_consumed_seq = self._frame_seq
         return self._buffers[self._read_idx]
 
     def _capture_loop(self):
@@ -493,6 +497,12 @@ class CaptureCard:
         except Exception:
             pass
         while self._running and self._cap:
+            # 背压: 消费端未跟上时让出 CPU, 避免无谓的 NV12->BGR 转换
+            # 采集 236fps 但管线只消费 ~150fps, 每秒 ~80 帧白转换抢 CPU 导致偶发卡顿
+            # 若消费端落后 >=2 帧 (还没来取), 让出 CPU 等消费端追上
+            if self._frame_seq - self._last_consumed_seq >= 2:
+                time.sleep(0.002)
+                continue  # 不抓新帧, 先让消费端处理已有帧
             ret, frame = self._cap.read()
             if not ret:
                 logger.warning("Failed to read frame from capture card")

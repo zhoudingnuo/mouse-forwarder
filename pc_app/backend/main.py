@@ -899,10 +899,17 @@ class MouseForwarderBackend:
                     self._t_detect = 0.0
                     self._t_body = 0.0
                     self._t_total = 0.0
+                    self._slow_frames = 0      # 单帧 detect >10ms 的卡顿帧数
+                    self._slow_max = 0.0       # 最慢单帧 detect
+                    self._frame_gap_max = 0.0  # 相邻帧最大间隔 (检测新帧等待)
                 self._status_count += 1
                 if self._status_count % 300 == 0:
-                    print(f'[TIMING] read={self._t_read:.2f}ms detect={self._t_detect:.2f}ms body={self._t_body:.2f}ms total={self._t_total:.2f}ms', flush=True)
+                    print(f'[TIMING] read={self._t_read:.2f}ms detect={self._t_detect:.2f}ms body={self._t_body:.2f}ms total={self._t_total:.2f}ms '
+                          f'slow={self._slow_frames}(max{self._slow_max:.1f}ms) gap={self._frame_gap_max:.0f}ms', flush=True)
                     self._t_read = self._t_detect = self._t_body = self._t_total = 0.0
+                    self._slow_frames = 0
+                    self._slow_max = 0.0
+                    self._frame_gap_max = 0.0
                     c = self.trajectory.config
                     # 计算最近目标到屏幕中心的距离
                     nearest_dist = float('inf')
@@ -986,10 +993,16 @@ class MouseForwarderBackend:
                 # 不 sleep, 让循环全速运行 (推理本身已占用 ~3ms, 无额外限速)
                 # 旧版 5ms 下限会导致推理 3.3ms + 等 5ms = 120fps, 已移除
                 # 耗时分解累积 (每 300 帧打印)
+                detect_ms = (t_detect - t_read) * 1000
                 self._t_read += (t_read - loop_start) * 1000
-                self._t_detect += (t_detect - t_read) * 1000
+                self._t_detect += detect_ms
                 self._t_body += (time.perf_counter() - t_detect) * 1000
                 self._t_total += (time.perf_counter() - loop_start) * 1000
+                # 卡顿帧统计: detect >10ms 或帧间等待 >15ms
+                if detect_ms > 10.0:
+                    self._slow_frames += 1
+                    if detect_ms > self._slow_max:
+                        self._slow_max = detect_ms
 
                 elapsed = time.perf_counter() - loop_start
                 
