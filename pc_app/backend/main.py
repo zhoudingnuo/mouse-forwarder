@@ -112,6 +112,20 @@ class MouseForwarderBackend:
         # X轴过冲检测: 上一帧AI步dx符号 + 过冲暂停剩余帧数
         self._last_ai_dx_sign = 0
         self._overshoot_pause_left = 0
+        # 自动背闪: 检测 dodge(闪光) 后按录制轨迹转身 + 回放状态
+        self._backflash_enabled = bool(self.config.get('back_flash', 'enabled', default=False))
+        self._backflash_conf = float(self.config.get('back_flash', 'conf_threshold', default=0.5))
+        self._backflash_cooldown = float(self.config.get('back_flash', 'cooldown_s', default=1.0))
+        self._backflash_speed = float(self.config.get('back_flash', 'playback_speed', default=1.0))
+        self._backflash_move_scale = float(self.config.get('back_flash', 'move_scale', default=3.0))
+        self._backflash_delay_ms = int(self.config.get('back_flash', 'delay_ms', default=50))
+        self._backflash_active = False      # 回放中 (暂停自瞄/扳机)
+        self._backflash_last_t = 0.0        # 上次触发时间 (冷却)
+        self._backflash_traj = None         # 学习轨迹 {t_ms, dx, dy} 或 None
+        self._backflash_loaded = False
+        self._backflash_trigger_count = 0   # 已触发次数 (前端显示)
+        self._backflash_task = None         # 回放任务 (含延迟等待期, 防重复触发)
+        self._load_backflash_traj()
         # 帧去重: 上次已推理的帧序号
         self._last_frame_seq = -1
         # 独立推理线程池 (与 JPEG 编码的默认线程池隔离, 避免排队竞争)
@@ -752,6 +766,7 @@ class MouseForwarderBackend:
     PRESET_KEYS = (
         'smooth_factor', 'max_step_px', 'min_confidence', 'target_offset_x',
         'target_offset_y', 'target_priority', 'fov_radius', 'fov_dynamic_gain',
+        'fov_pull_enabled', 'fov_pull_speed',
         'sniper_fov_multiplier', 'sniper_trigger_multiplier', 'sniper_ai_scale',
         'sniper_deadzone', 'sniper_hysteresis', 'sniper_scope_time',
         'sniper_confirm_frames', 'overshoot_pause_frames',
@@ -911,10 +926,13 @@ class MouseForwarderBackend:
                     self._slow_max = 0.0
                     self._frame_gap_max = 0.0
                     c = self.trajectory.config
-                    # 计算最近目标到屏幕中心的距离
+                    # 计算最近瞄准点 (叠加 offset) 到屏幕中心的距离 (与扳机判定一致)
                     nearest_dist = float('inf')
                     for d in detections:
-                        dist = ((d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2) ** 0.5
+                        ax = d.cx + d.w * c.target_offset_x / 100.0
+                        ay = d.cy + d.h * c.target_offset_y / 100.0
+                        dist = ((ax - self._screen_w / 2) ** 2 +
+                                (ay - self._screen_h / 2) ** 2) ** 0.5
                         if dist < nearest_dist:
                             nearest_dist = dist
                     dist_str = f'{nearest_dist:.0f}px' if nearest_dist != float('inf') else '-'
@@ -923,11 +941,18 @@ class MouseForwarderBackend:
                           f'thr={self._trigger_threshold} dist={dist_str} in_range={in_range} '
                           f'traj={self._trajectory_enabled} kp={c.kp:.2f}')
 
-                # 计算轨迹
-                ai_steps = self.trajectory.calculate(detections) if self._trajectory_enabled else []
+                # 计算轨迹 (背闪回放期间暂停自瞄)
+                if self._backflash_active:
+                    ai_steps = []
+                else:
+                    ai_steps = self.trajectory.calculate(detections) if self._trajectory_enabled else []
 
-                # 自动扳机检测
-                await self._check_auto_trigger(detections)
+                # 背闪检测 (回放期间不重复触发; 检测到 dodge 后触发转身)
+                self._check_back_flash(detections)
+
+                # 自动扳机检测 (背闪回放期间暂停扳机)
+                if not self._backflash_active:
+                    await self._check_auto_trigger(detections)
 
                 # AI 轨迹独立发送 (步间 1ms 间隔, 在帧空闲时间内发完)
                 # 如果开启了"按住左键才自瞄", 且左键未按下 -> 跳过
@@ -1065,17 +1090,22 @@ class MouseForwarderBackend:
                 self._trigger_armed = False
             return
 
-        # 查找离屏幕中心最近的目标
+        # 查找离屏幕中心最近的目标 (非狙击用叠加 offset 后的瞄准点判定,
+        # 与自瞄一致: offset_x/y 是框宽/高的百分比, 如 -31% 瞄头时按头判距)
+        ox = self.trajectory.config.target_offset_x / 100.0
+        oy = self.trajectory.config.target_offset_y / 100.0
         target_dist = float('inf')
         for d in detections:
             if d.confidence < self.trajectory.config.min_confidence:
                 continue
-            # 距离: 狙击模式只用 X 轴距离 (Y 轴忽略), 普通模式欧氏距离
-            dx = d.cx - self._screen_w / 2
+            # 瞄准点 = 框中心 + 偏移 (狙击忽略 Y, 只用 X)
+            aim_x = d.cx + d.w * ox
+            dx = aim_x - self._screen_w / 2
             if rmb_down:
                 dist = abs(dx)
             else:
-                dy = d.cy - self._screen_h / 2
+                aim_y = d.cy + d.h * oy
+                dy = aim_y - self._screen_h / 2
                 dist = (dx * dx + dy * dy) ** 0.5
             # FOV 范围检查 (动态: 随目标框高度变化)
             if self.trajectory.config.fov_radius > 0:
@@ -1103,6 +1133,223 @@ class MouseForwarderBackend:
         await self._fire_trigger(True)
         await asyncio.sleep(0.01)  # 10ms 按键去抖
         await self._fire_trigger(False)
+
+    # ============ 自动背闪 ============
+
+    def _load_backflash_traj(self):
+        """加载录制的背闪轨迹 (tools/backflash_traj.json)"""
+        self._backflash_traj = None
+        self._backflash_loaded = False
+        try:
+            import os as _os
+            traj_path = _os.path.join(_os.path.dirname(__file__), '..', '..',
+                                      'tools', 'backflash_traj.json')
+            if not _os.path.exists(traj_path):
+                logger.info("Backflash: 轨迹文件不存在, 背闪禁用 "
+                            "(先运行 tools/record_backflash.py 录制)")
+                return
+            with open(traj_path, 'r', encoding='utf-8') as f:
+                import json as _json
+                data = _json.load(f)
+            # 校验
+            if not data or 't_ms' not in data or 'dx' not in data:
+                logger.warning("Backflash: 轨迹文件格式无效")
+                return
+            self._backflash_traj = data
+            self._backflash_loaded = True
+            dur = data['t_ms'][-1] if data['t_ms'] else 0
+            logger.info(f"Backflash: 已加载轨迹 ({dur:.0f}ms, "
+                        f"{len(data['dx'])} 采样点)")
+        except Exception as e:
+            logger.warning(f"Backflash: 轨迹加载失败: {e}")
+
+    async def _send_backflash_state(self):
+        """向前端发送背闪状态"""
+        if self._ws_client:
+            try:
+                await self._send({
+                    'type': 'back_flash_state',
+                    'enabled': self._backflash_enabled,
+                    'loaded': self._backflash_loaded,
+                    'active': self._backflash_active,
+                    'trigger_count': self._backflash_trigger_count,
+                    'conf_threshold': self._backflash_conf,
+                    'cooldown_s': self._backflash_cooldown,
+                    'playback_speed': self._backflash_speed,
+                    'move_scale': self._backflash_move_scale,
+                    'delay_ms': self._backflash_delay_ms,
+                    'traj_duration_ms': int(self._backflash_traj['t_ms'][-1])
+                        if self._backflash_traj and self._backflash_traj['t_ms'] else 0,
+                })
+            except Exception as e:
+                logger.error(f"Send backflash state error: {e}")
+
+    def _check_back_flash(self, detections):
+        """检测 dodge(闪光): 高置信度 dodge + 冷却到期 -> 触发背闪"""
+        if not self._backflash_enabled or not self._backflash_loaded:
+            return
+        if not self._backflash_traj:
+            return
+        if self._backflash_active:
+            return  # 已在回放
+        if self._backflash_task and not self._backflash_task.done():
+            return  # 回放任务进行中 (含延迟等待期), 防重复触发
+        now = time.time()
+        if now - self._backflash_last_t < self._backflash_cooldown:
+            return  # 冷却中
+
+        # 找最高置信度的 dodge
+        best_dodge = None
+        for d in detections:
+            if d.confidence < self._backflash_conf:
+                continue
+            # 类别名映射确认 (class 4 = dodge, 双保险)
+            try:
+                from capture_inference import CLASS_NAMES
+                name = CLASS_NAMES[d.class_id] if d.class_id < len(CLASS_NAMES) else ''
+            except Exception:
+                name = ''
+            if name == 'dodge' or d.class_id == 4:
+                if best_dodge is None or d.confidence > best_dodge.confidence:
+                    best_dodge = d
+        if best_dodge is None:
+            return
+
+        # 方向: 闪光在屏幕中心左侧 -> 往右转 (dx 取正镜像为右背轨迹方向)
+        # 录制轨迹统一为"右背"方向; 闪光在左侧需要背向(右转), 右侧需要左转(镜像)
+        flash_left = best_dodge.cx < self._screen_w / 2
+        self._backflash_last_t = now
+        self._backflash_trigger_count += 1
+        logger.info(f"Backflash: 检测到闪光 (conf={best_dodge.confidence:.2f}, "
+                    f"在{'左' if flash_left else '右'}侧), 触发背闪 #{self._backflash_trigger_count} "
+                    f"(延迟 {self._backflash_delay_ms}ms)")
+        self._backflash_task = asyncio.create_task(self._backflash_playback(flash_left))
+
+    def _make_backflash_variant(self, traj):
+        """每次回放生成略有差异的动作变体 (模拟人手每次动作不完全相同)
+
+        变化源:
+          - 幅度 jitter ±12%    (转身角度大小略有不同)
+          - 时长 jitter ±6%     (整体快慢略有不同)
+          - 速度曲线低频波动: 1~3 整周期正弦, 幅值 6~12% (人手发力节奏)
+          - 高频速度抖动: 每采样点 ~10%|dx| 随机 (录制轨迹被平均抹平的毛刺)
+          - Y 轴恢复: 平均把录制 dy 抵消到 ~1/6, 恢复 2.5x 形状 + 手腕弧线
+            低频振荡 (随机周期 12-22 点/相位), 回放时 y 有自然起伏
+          - 残差补偿: 终点累计拉回 录制残差×amp 的 ±30% 内, 转回后不跑偏
+        """
+        n = len(traj['t_ms'])
+        amp = np.random.uniform(0.88, 1.12)
+        dur_s = np.random.uniform(0.94, 1.06)
+        f = int(np.random.randint(1, 4))            # 低频波动周期数
+        phase = np.random.uniform(0, 2 * np.pi)
+        wob = np.random.uniform(0.06, 0.12)
+        x = np.linspace(0, 2 * np.pi * f, n, endpoint=False)
+        w = 1.0 + wob * np.sin(x + phase)
+
+        dx_arr = np.array(traj['dx']) * amp * w
+        # y 形状恢复 (录制 dy 平均被抵消 ~6x, 恢复到 ~2.5x 保留趋势)
+        dy_arr = np.array(traj['dy']) * amp * 2.5
+
+        # 高频速度抖动: 人手发力不均 (录制逐事件速度跳变 ~±10%+)
+        dx_arr += np.random.normal(0, 1, n) * (0.10 * np.abs(dx_arr) + 2.0)
+
+        # 手腕弧线: 低频随机振荡叠加到 y (周期 34~62ms, 幅度近似录制 dy 起伏)
+        p_osc = np.random.uniform(12, 22)
+        ph_osc = np.random.uniform(0, 2 * np.pi)
+        a_osc = np.random.uniform(5, 10)
+        dy_arr += a_osc * np.sin(2 * np.pi * np.arange(n) / p_osc + ph_osc)
+        # y 总漂移轻微压回 (振荡相位随机导致的小幅上下偏移)
+        dy_drift = float(np.sum(dy_arr))
+        if abs(dy_drift) > 60.0:
+            weights = np.linspace(0, 1, 15)
+            weights /= weights.sum()
+            dy_arr[n - 15:] -= weights * dy_drift
+
+        # 残差补偿 (压掉速度波动造成的 x 净差偏移)
+        base_end = float(np.sum(traj['dx']))  # 录制残差 (回正补偿后 ~5% 峰值)
+        target_end = base_end * amp * np.random.uniform(0.7, 1.3)
+        cur_end = float(np.sum(dx_arr))
+        diff = target_end - cur_end
+        if abs(diff) > max(5.0, abs(target_end) * 0.2):
+            # 差量按线性权重分摊到末端 15 点 (越靠后越多), 权重和为 1
+            weights = np.linspace(0, 1, 15)
+            weights /= weights.sum()
+            dx_arr[n - 15:] += weights * diff
+
+        t_ms = [float(t * dur_s) for t in traj['t_ms']]
+        return {
+            't_ms': t_ms,
+            'dx': [float(v) for v in dx_arr],
+            'dy': [float(v) for v in dy_arr],
+        }
+
+    async def _backflash_playback(self, flash_left: bool):
+        """回放录制的背闪轨迹 (暂停自瞄/扳机)
+
+        每次回放生成随机变体 (幅度/时长/速度波动), 再叠加用户设置:
+          - playback_speed: 时间倍数 (0.5~3.0, 1.0=人手原速, 越大反应越快)
+          - move_scale:     位移倍数 (0.5~3.0, 转身角度整体缩放)
+        """
+        if not self._backflash_traj:
+            return
+        # Windows 计时粒度默认 ~15ms, 会把轨迹时序拉长数倍; 回放期间提升到 1ms
+        winmm = None
+        try:
+            import ctypes
+            winmm = ctypes.windll.winmm
+            winmm.timeBeginPeriod(1)
+        except Exception:
+            winmm = None
+        try:
+            # 反应延迟 (10~1000ms): 检测到闪光后不立即转身, 模拟人手反应
+            # 延迟期间不自锁 (自瞄/扳机照常); 用户手动关了开关则取消转身
+            delay_s = min(1.0, max(0.01, self._backflash_delay_ms / 1000.0))
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+                if not self._backflash_enabled or not self.serial.is_connected:
+                    return
+            self._backflash_active = True
+            traj = self._make_backflash_variant(self._backflash_traj)
+            t_ms = traj['t_ms']
+            dx_list = traj['dx']
+            dy_list = traj['dy']
+            speed = min(3.0, max(0.5, self._backflash_speed))
+            mscale = min(10.0, max(0.5, self._backflash_move_scale))
+
+            # 录制轨迹为右背 (dx>0); 闪光在右(需左转背对) -> 镜像 dx
+            mirror = not flash_left  # 闪光在右 -> 左转 -> dx 取负
+            # 每 5 个采样点为一组连续发送, 组间按组时长等待:
+            # 微 sleep (~2ms) 在 Windows 上误差大, 组聚合后误差 <5%
+            GRP = 5
+            for g in range(0, len(t_ms), GRP):
+                if not self.serial.is_connected:
+                    break
+                for i in range(g, min(g + GRP, len(t_ms))):
+                    dx = (dx_list[i] if not mirror else -dx_list[i]) * mscale
+                    dy = dy_list[i] * mscale
+                    # 拆分大位移到 int8 范围并发送
+                    for sx, sy in self._split_move(int(dx), int(dy), 120):
+                        packet = encode_packet(0, sx, sy, 0)
+                        await self.serial.send(packet)
+                        self.stats['backflash_events'] = self.stats.get('backflash_events', 0) + 1
+                # 组间等待: 该组实际时长 (整体加速/减速: >1 更快)
+                if g + GRP < len(t_ms):
+                    i_end = min(g + GRP, len(t_ms)) - 1
+                    dt = (t_ms[i_end] - t_ms[g]) / 1000.0 / speed
+                    if dt > 0:
+                        await asyncio.sleep(dt)
+            logger.info("Backflash: 回放完成, 恢复自瞄")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Backflash playback error: {e}")
+        finally:
+            self._backflash_active = False
+            if winmm is not None:
+                try:
+                    winmm.timeEndPeriod(1)
+                except Exception:
+                    pass
 
     def _apply_sniper_mode(self, ai_steps):
         """狙击模式: 按住右键时 AI 轨迹只修正 X 轴 (Y 轴不动), 且用独立的 AI 倍数
@@ -1133,7 +1380,8 @@ class MouseForwarderBackend:
         packet = encode_packet(buttons=buttons, dx=0, dy=0, wheel=0)
         if self.serial.is_connected:
             try:
-                self.serial._serial.write(packet)
+                # 走线程安全写 (与鼠标转发/回放共享写锁, 避免包交错)
+                self.serial.write_sync(packet)
                 self.stats['packets_sent'] += 1
                 self.stats['bytes_sent'] += len(packet)
             except Exception:
@@ -1331,6 +1579,46 @@ class MouseForwarderBackend:
                     await self._send({'type': 'center_crop_status', 'size': val})
                     logger.info(f"Center crop size set to {val}")
 
+            # --- 自动背闪 ---
+            elif msg_type == 'back_flash_toggle':
+                enabled = bool(data.get('enabled', False))
+                self._backflash_enabled = enabled
+                self.config.set('back_flash', 'enabled', enabled)
+                logger.info(f"Backflash enabled={enabled}")
+                await self._send_backflash_state()
+
+            elif msg_type == 'back_flash_config':
+                # 参数: conf_threshold / cooldown_s / playback_speed / move_scale / delay_ms
+                # cooldown 0.3~5.0s; speed 0.5~3.0; move_scale 0.5~10.0; delay_ms 10~300 步进 10
+                PARAMS = {
+                    'conf_threshold': ('conf', None, None, None),
+                    'cooldown_s': ('cooldown', 0.3, 5.0, None),
+                    'playback_speed': ('speed', 0.5, 3.0, None),
+                    'move_scale': ('move_scale', 0.5, 10.0, None),
+                    'delay_ms': ('delay_ms', 10, 1000, 10),
+                }
+                for key, (attr, lo, hi, step) in PARAMS.items():
+                    if key in data:
+                        try:
+                            val = float(data[key])
+                            if lo is not None:
+                                val = max(lo, min(hi, val))
+                            if step:
+                                val = round(val / step) * step
+                            setattr(self, '_backflash_' + attr, val)
+                            self.config.set('back_flash', key, val)
+                        except (TypeError, ValueError):
+                            pass
+                await self._send_backflash_state()
+
+            elif msg_type == 'back_flash_reload':
+                # 重新加载录制轨迹 (录制新轨迹后调用)
+                self._load_backflash_traj()
+                await self._send_backflash_state()
+
+            elif msg_type == 'get_backflash_state':
+                await self._send_backflash_state()
+
             # --- 模型管理 ---
             elif msg_type == 'list_models':
                 try:
@@ -1487,6 +1775,10 @@ class MouseForwarderBackend:
                     config.fov_radius = int(data['fov_radius'])
                 if 'fov_dynamic_gain' in data:
                     config.fov_dynamic_gain = max(0.0, min(0.5, float(data['fov_dynamic_gain'])))
+                if 'fov_pull_enabled' in data:
+                    config.fov_pull_enabled = bool(data['fov_pull_enabled'])
+                if 'fov_pull_speed' in data:
+                    config.fov_pull_speed = max(1.0, min(100.0, float(data['fov_pull_speed'])))
                 if 'sniper_fov_multiplier' in data:
                     config.sniper_fov_multiplier = max(1.0, min(5.0, float(data['sniper_fov_multiplier'])))
                 if 'sniper_trigger_multiplier' in data:
@@ -1542,6 +1834,8 @@ class MouseForwarderBackend:
                 # 全局固定参数 (抖动/预测帧数) 恒为 0, 不持久化
                 self.config.set('trajectory', 'fov_radius', config.fov_radius)
                 self.config.set('trajectory', 'fov_dynamic_gain', config.fov_dynamic_gain)
+                self.config.set('trajectory', 'fov_pull_enabled', config.fov_pull_enabled)
+                self.config.set('trajectory', 'fov_pull_speed', config.fov_pull_speed)
                 self.config.set('trajectory', 'sniper_fov_multiplier', config.sniper_fov_multiplier)
                 self.config.set('trajectory', 'sniper_trigger_multiplier', config.sniper_trigger_multiplier)
                 self.config.set('trajectory', 'sniper_ai_scale', config.sniper_ai_scale)
@@ -1575,6 +1869,8 @@ class MouseForwarderBackend:
                         'prediction_ticks': config.prediction_ticks,
                         'fov_radius': config.fov_radius,
                         'fov_dynamic_gain': config.fov_dynamic_gain,
+                        'fov_pull_enabled': config.fov_pull_enabled,
+                        'fov_pull_speed': config.fov_pull_speed,
                         'sniper_fov_multiplier': config.sniper_fov_multiplier,
                         'sniper_trigger_multiplier': config.sniper_trigger_multiplier,
                         'sniper_ai_scale': config.sniper_ai_scale,
@@ -1741,9 +2037,12 @@ class MouseForwarderBackend:
         """鼠标事件回调 (放入队列, 由转发线程写入串口)"""
         self.stats['mouse_events'] += 1
 
-        # 过滤 SetCursorPos 回弹事件 (单次位移超过 200px 的直接丢弃)
-        if abs(event.dx) > 200 or abs(event.dy) > 200:
-            return
+        # 过滤 SetCursorPos 回弹事件 (仅 pynput 光标位置差值会含回弹大跳;
+        # raw 位移是纯物理增量, 不受光标位置影响, 大幅甩动单事件可达数千,
+        # 若过滤会导致快速转身被吞 -> 卡顿/跟不上手)
+        if not getattr(event, '_from_raw', False):
+            if abs(event.dx) > 200 or abs(event.dy) > 200:
+                return
 
         # 叠加扳机状态 (扳机按下时, 无论物理鼠标状态, 强制左键)
         # pynput 侧键位 (bit3=后退, bit4=前进) 即 HID 标准位, 直接透传
@@ -1804,6 +2103,7 @@ class MouseForwarderBackend:
             back=bool(btns & 8),
             forward=bool(btns & 16),
         )
+        event._from_raw = True  # 标记 raw 物理输入 (豁免回弹过滤)
         self._on_mouse_event(event)
 
     @staticmethod
@@ -1824,10 +2124,8 @@ class MouseForwarderBackend:
             try:
                 packet = self._mouse_queue.get(timeout=1)
                 if self.serial.is_connected and self.serial._serial:
-                    try:
-                        self.serial._serial.write(packet)
-                    except Exception:
-                        pass
+                    # 线程安全写 (与扳机/回放共享写锁, 避免包交错被固件丢弃)
+                    self.serial.write_sync(packet)
             except queue.Empty:
                 continue
             except Exception:
@@ -2019,6 +2317,17 @@ class MouseForwarderBackend:
                 'aim_require_lmb': self._aim_require_lmb,
             },
             'lock_mode': self._lock_mode,
+            'back_flash': {
+                'enabled': self._backflash_enabled,
+                'loaded': self._backflash_loaded,
+                'active': self._backflash_active,
+                'trigger_count': self._backflash_trigger_count,
+                'conf_threshold': self._backflash_conf,
+                'cooldown_s': self._backflash_cooldown,
+                'playback_speed': self._backflash_speed,
+                'traj_duration_ms': int(self._backflash_traj['t_ms'][-1])
+                    if self._backflash_traj and self._backflash_traj['t_ms'] else 0,
+            },
             # 当前配置 (前端用于同步滑块)
             'config': {
                 'smooth_factor': c.smooth_factor,
@@ -2031,6 +2340,8 @@ class MouseForwarderBackend:
                 'prediction_ticks': c.prediction_ticks,
                 'fov_radius': c.fov_radius,
                 'fov_dynamic_gain': c.fov_dynamic_gain,
+                'fov_pull_enabled': c.fov_pull_enabled,
+                'fov_pull_speed': c.fov_pull_speed,
                 'sniper_fov_multiplier': c.sniper_fov_multiplier,
                 'sniper_trigger_multiplier': c.sniper_trigger_multiplier,
                 'sniper_ai_scale': c.sniper_ai_scale,

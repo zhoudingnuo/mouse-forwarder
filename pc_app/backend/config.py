@@ -23,6 +23,8 @@ DEFAULT_CONFIG = {
         'target_priority': -1,
         'prediction_ticks': 3,
         'fov_radius': 300,
+        'fov_pull_enabled': False,
+        'fov_pull_speed': 2.0,
         'ai_scale': 1.0,
         'trigger_enabled': False,
         'trigger_threshold': 5,

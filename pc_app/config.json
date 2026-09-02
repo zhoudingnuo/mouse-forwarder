@@ -7,15 +7,17 @@
     "target_offset_x": 0,
     "target_offset_y": -31,
     "jitter_amount": 0.15,
-    "target_priority": -1,
+    "target_priority": 0,
     "prediction_ticks": 3,
     "fov_radius": 9,
+    "fov_pull_enabled": true,
+    "fov_pull_speed": 2.0,
     "ai_scale": 1.0,
-    "trigger_enabled": false,
+    "trigger_enabled": true,
     "trigger_threshold": 3,
     "invert_ai_x": false,
     "invert_ai_y": false,
-    "kp": 0.35,
+    "kp": 0.65,
     "ki": 0.02,
     "kd": 0.0,
     "integral_limit": 100.0,
@@ -41,7 +43,7 @@
     "use_ffmpeg": false,
     "crop_size": 640,
     "capture_format": "nv12",
-    "center_crop": 256
+    "center_crop": 884
   },
   "mouse": {
     "source": "raw"
@@ -66,9 +68,11 @@
         "min_confidence": 0.3,
         "target_offset_x": 0,
         "target_offset_y": -31,
-        "target_priority": -1,
+        "target_priority": 0,
         "fov_radius": 9,
         "fov_dynamic_gain": 0.5,
+        "fov_pull_enabled": true,
+        "fov_pull_speed": 2.0,
         "sniper_fov_multiplier": 5.0,
         "sniper_trigger_multiplier": 3.0,
         "sniper_ai_scale": 1.0,
@@ -80,7 +84,7 @@
         "ai_scale": 1.0,
         "invert_ai_x": false,
         "invert_ai_y": false,
-        "kp": 0.35,
+        "kp": 0.65,
         "kd": 0.0,
         "integral_limit": 100.0,
         "max_steps_per_frame": 20,
@@ -88,7 +92,7 @@
         "unsettle_hysteresis": 4.0,
         "y_scale": 0.2,
         "enabled": true,
-        "trigger_enabled": false,
+        "trigger_enabled": true,
         "trigger_threshold": 3,
         "aim_require_lmb": false
       }
@@ -109,5 +113,13 @@
       "name": "",
       "params": {}
     }
+  },
+  "back_flash": {
+    "enabled": true,
+    "conf_threshold": 0.5,
+    "cooldown_s": 1.0,
+    "playback_speed": 0.5,
+    "move_scale": 4.0,
+    "delay_ms": 210
   }
 }

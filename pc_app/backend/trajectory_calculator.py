@@ -39,6 +39,8 @@ class TrajectoryConfig:
     max_trail_points: int = 200         # 轨迹点最大保留数
     fov_radius: int = 300               # 自瞄基准范围 (像素), 0=禁用范围限制
     fov_dynamic_gain: float = 0.10      # 动态FOV增益 (px/px): 每 1px 目标框高增加的范围
+    fov_pull_enabled: bool = False      # FOV外慢速引导: 目标超出自瞄范围时缓慢转向 (不锁不PID)
+    fov_pull_speed: float = 2.0         # 引导速度 (px/帧): 每帧朝目标方向的最大移动量
     sniper_fov_multiplier: float = 2.0  # 狙击模式 FOV 倍率 (按住右键时自瞄范围 ×倍率)
     sniper_trigger_multiplier: float = 3.0  # 狙击模式扳机范围倍数 (触发阈值 ×倍率)
     sniper_ai_scale: float = 1.0        # 狙击模式 AI 倍数 (开镜灵敏度低, 独立缩放)
@@ -252,7 +254,9 @@ class TrajectoryCalculator:
             self._integral_y = 0.0
             self._prev_error_x = 0.0
             self._prev_error_y = 0.0
-            return []
+            # FOV 外慢速引导: 无锁定目标时, 若有候选在画面中则缓慢转向
+            # (开关 fov_pull_enabled; 进入 FOV 后正常自瞄接管)
+            return self._fov_pull_steps(detections)
 
         self.selected_target = target
         self._targets_acquired += 1
@@ -271,20 +275,35 @@ class TrajectoryCalculator:
         error_x = aim_x - self._screen_center_x
         error_y = aim_y - self._screen_center_y
         # Y轴误差按 y_scale 缩放后再计算距离, 使 Y 死区同步缩小
+        # Y 输出按 y_scale 缩放 (补偿游戏 Y 灵敏度); 判停须用屏幕像素原始误差,
+        # 否则 Y 停止带被放大 1/y_scale (y_scale=0.2 -> 20px+), 小目标/远目标的
+        # offset 瞄点 (如 -31% 瞄头) 会停在带内偏下甚至完全不动
         scaled_ey = error_y * self.config.y_scale
         distance = math.sqrt(error_x ** 2 + scaled_ey ** 2)
 
 # ── 滞回死区 (从配置读取; 狙击模式用独立的值) ──
         if self.sniper_mode:
+            # 狙击: Y 不修正, 沿用缩放判停 (不因 Y 误差拖住 X)
             SETTLE_DEADZONE = self.config.sniper_deadzone
             UNSETTLE_HYST = self.config.sniper_hysteresis
         else:
+            # 普通: X/Y 独立按屏幕 px 判停 (Y 精确到 offset 瞄点)
             SETTLE_DEADZONE = self.config.settle_deadzone
             UNSETTLE_HYST = self.config.unsettle_hysteresis
 
+        if self.sniper_mode:
+            # 狙击沿用原距离判停 (Y 不修, 缩放后不拖累 X)
+            in_zone = distance < SETTLE_DEADZONE
+            out_zone = distance >= UNSETTLE_HYST
+        else:
+            in_zone = (abs(error_x) <= SETTLE_DEADZONE and
+                       abs(error_y) <= SETTLE_DEADZONE)
+            out_zone = (abs(error_x) > UNSETTLE_HYST or
+                        abs(error_y) > UNSETTLE_HYST)
+
         if self.is_settled:
             # 已对准状态: 用较大的滞回阈值
-            if distance < UNSETTLE_HYST:
+            if not out_zone:
                 # 保持对准, 不发步数
                 return []
             else:
@@ -293,7 +312,7 @@ class TrajectoryCalculator:
                 self._settled_frames = 0
         else:
             # 未对准: 检查是否进入死区
-            if distance < SETTLE_DEADZONE:
+            if in_zone:
                 self._settled_frames += 1
                 if self._settled_frames >= 3:
                     # 连续 3 帧在死区内 → 标记已对准
@@ -492,6 +511,47 @@ class TrajectoryCalculator:
 
     # ============ 内部方法 ============
 
+    def _fov_pull_steps(self, detections: List[Detection]) -> List[Tuple[int, int]]:
+        """FOV 外慢速引导: 目标超出自瞄范围时, 朝最近目标缓慢转向
+
+        不锁定目标、不走 PID, 只给"朝目标方向"的慢速倾向
+        (每帧最多 fov_pull_speed px, 方向指向目标), 帮玩家接近画面外的目标。
+        靠近 FOV 边界 (1.0~1.5x) 时线性减速, 进圈后由正常自瞄接管, 避免过冲。
+        """
+        cfg = self.config
+        if not cfg.fov_pull_enabled or cfg.fov_radius <= 0 or cfg.fov_pull_speed <= 0:
+            return []
+        # 与 _select_target 一致的候选过滤 (置信度 + 类别)
+        cands = [d for d in detections if d.confidence >= cfg.min_confidence]
+        if cfg.target_priority >= 0:
+            cands = [d for d in cands if d.class_id == cfg.target_priority]
+        if not cands:
+            return []
+        best = min(cands, key=lambda d:
+                   (d.cx - self._screen_center_x) ** 2 +
+                   (d.cy - self._screen_center_y) ** 2)
+        err_x = best.cx - self._screen_center_x
+        err_y = best.cy - self._screen_center_y
+        dist = math.hypot(err_x, err_y)
+        if dist <= 0:
+            return []
+
+        fov = self.dynamic_fov(best.h)
+        if fov <= 0:
+            fov = float(cfg.fov_radius)
+        if dist <= fov:
+            return []  # 已在自瞄范围内 -> 正常自瞄会接管, 不双写
+
+        speed = max(1.0, min(100.0, cfg.fov_pull_speed))
+        if dist < fov * 1.5:
+            # 接近 FOV 边界: 1.5x -> 1.0x 线性减速到 25%, 平滑衔接
+            speed *= max(0.25, (dist - fov) / (fov * 0.5))
+        sx = int(round(err_x / dist * speed))
+        sy = int(round(err_y / dist * speed))
+        if sx == 0 and sy == 0:
+            return []
+        return [(max(-127, min(127, sx)), max(-127, min(127, sy)))]
+
     def _select_target(self, detections: List[Detection]) -> Optional[Detection]:
         """
         选择瞄准目标
@@ -529,11 +589,10 @@ class TrajectoryCalculator:
             self._missed_frames = 0
             return None
 
-        # 按目标类别优先级过滤
+        # 按目标类别过滤 (固定类别时: 画面无该类则无目标, 不降级锁别的类别)
         if self.config.target_priority >= 0:
-            filtered = [d for d in candidates if d.class_id == self.config.target_priority]
-            if filtered:
-                candidates = filtered
+            candidates = [d for d in candidates
+                          if d.class_id == self.config.target_priority]
 
         # 按 FOV 范围过滤 (动态: 每个目标框按自身高度计算允许范围, 框越高范围越大)
         if self.config.fov_radius > 0:

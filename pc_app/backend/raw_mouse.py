@@ -215,17 +215,42 @@ class RawMouseMonitor:
         mouse = raw.mouse
         btn_flags = mouse.usButtonFlags
 
+        # 本次事件的按钮沿 (直接来自 usButtonFlags; 快速点击 down+up 可能同事件,
+        # 合成状态会归零, 所以单独暴露沿供转发方按序发送按下/抬起)
+        btn_down = 0
+        btn_up = 0
+
         # 按钮状态 (与协议一致: bit0=左, bit1=右, bit2=中, bit4=后退, bit5=前进)
-        if btn_flags & RI_MOUSE_LEFT_BUTTON_DOWN: self._buttons |= 0x01
-        if btn_flags & RI_MOUSE_LEFT_BUTTON_UP: self._buttons &= ~0x01
-        if btn_flags & RI_MOUSE_RIGHT_BUTTON_DOWN: self._buttons |= 0x02
-        if btn_flags & RI_MOUSE_RIGHT_BUTTON_UP: self._buttons &= ~0x02
-        if btn_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN: self._buttons |= 0x04
-        if btn_flags & RI_MOUSE_MIDDLE_BUTTON_UP: self._buttons &= ~0x04
-        if btn_flags & RI_MOUSE_BUTTON_4_DOWN: self._buttons |= 0x10   # X1 后退 (FLAG_BACK)
-        if btn_flags & RI_MOUSE_BUTTON_4_UP: self._buttons &= ~0x10
-        if btn_flags & RI_MOUSE_BUTTON_5_DOWN: self._buttons |= 0x20   # X2 前进 (FLAG_FORWARD)
-        if btn_flags & RI_MOUSE_BUTTON_5_UP: self._buttons &= ~0x20
+        if btn_flags & RI_MOUSE_LEFT_BUTTON_DOWN:
+            btn_down |= 0x01
+            self._buttons |= 0x01
+        if btn_flags & RI_MOUSE_LEFT_BUTTON_UP:
+            btn_up |= 0x01
+            self._buttons &= ~0x01
+        if btn_flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
+            btn_down |= 0x02
+            self._buttons |= 0x02
+        if btn_flags & RI_MOUSE_RIGHT_BUTTON_UP:
+            btn_up |= 0x02
+            self._buttons &= ~0x02
+        if btn_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN:
+            btn_down |= 0x04
+            self._buttons |= 0x04
+        if btn_flags & RI_MOUSE_MIDDLE_BUTTON_UP:
+            btn_up |= 0x04
+            self._buttons &= ~0x04
+        if btn_flags & RI_MOUSE_BUTTON_4_DOWN:
+            btn_down |= 0x10
+            self._buttons |= 0x10   # X1 后退 (FLAG_BACK)
+        if btn_flags & RI_MOUSE_BUTTON_4_UP:
+            btn_up |= 0x10
+            self._buttons &= ~0x10
+        if btn_flags & RI_MOUSE_BUTTON_5_DOWN:
+            btn_down |= 0x20
+            self._buttons |= 0x20   # X2 前进 (FLAG_FORWARD)
+        if btn_flags & RI_MOUSE_BUTTON_5_UP:
+            btn_up |= 0x20
+            self._buttons &= ~0x20
 
         dx = mouse.lLastX
         dy = mouse.lLastY
@@ -243,6 +268,8 @@ class RawMouseMonitor:
                 try:
                     self._on_event({
                         'buttons': self._buttons,
+                        'btn_down': btn_down,
+                        'btn_up': btn_up,
                         'dx': dx,
                         'dy': dy,
                         'wheel': wheel,

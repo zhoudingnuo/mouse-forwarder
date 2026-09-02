@@ -161,6 +161,20 @@
             });
         }
 
+        // FOV外慢速引导 (开关 + 速度)
+        const chkFovPull = document.getElementById('chk-fov-pull');
+        if (chkFovPull) {
+            chkFovPull.addEventListener('change', sendTrajectoryConfig);
+        }
+        const sliderFovPullSpeed = document.getElementById('slider-fov-pull-speed');
+        const lblFovPullSpeed = document.getElementById('lbl-fov-pull-speed');
+        if (sliderFovPullSpeed) {
+            sliderFovPullSpeed.addEventListener('input', () => {
+                if (lblFovPullSpeed) lblFovPullSpeed.textContent = sliderFovPullSpeed.value;
+                sendTrajectoryConfig();
+            });
+        }
+
         // 狙击确认帧数 (目标连续检出达到此帧数才允许扳机)
         const sliderSniperFrames = document.getElementById('slider-sniper-frames');
         const lblSniperFrames = document.getElementById('lbl-sniper-frames');
@@ -215,6 +229,60 @@
         if (targetPriority) {
             targetPriority.addEventListener('change', sendTrajectoryConfig);
         }
+
+        // 自动背闪开关
+        const chkBackflash = document.getElementById('chk-backflash');
+        if (chkBackflash) {
+            chkBackflash.addEventListener('change', () => {
+                if (ws && ws.connected) {
+                    ws.send({ type: 'back_flash_toggle', enabled: chkBackflash.checked });
+                }
+            });
+        }
+        // 背闪速度/幅度倍数 (0.5~3.0)
+        function sendBackflashParam(key, val, lblId) {
+            const lbl = document.getElementById(lblId);
+            if (lbl) lbl.textContent = parseFloat(val).toFixed(2);
+            if (ws && ws.connected) {
+                ws.send({ type: 'back_flash_config', [key]: parseFloat(val) });
+            }
+        }
+        const sliderBfSpeed = document.getElementById('slider-bf-speed');
+        if (sliderBfSpeed) {
+            sliderBfSpeed.addEventListener('input', () => {
+                sendBackflashParam('playback_speed', sliderBfSpeed.value, 'lbl-bf-speed');
+            });
+        }
+        const sliderBfScale = document.getElementById('slider-bf-scale');
+        if (sliderBfScale) {
+            sliderBfScale.addEventListener('input', () => {
+                sendBackflashParam('move_scale', sliderBfScale.value, 'lbl-bf-scale');
+            });
+        }
+        const sliderBfDelay = document.getElementById('slider-bf-delay');
+        if (sliderBfDelay) {
+            sliderBfDelay.addEventListener('input', () => {
+                const lbl = document.getElementById('lbl-bf-delay');
+                if (lbl) lbl.textContent = sliderBfDelay.value;
+                if (ws && ws.connected) {
+                    ws.send({ type: 'back_flash_config', delay_ms: parseInt(sliderBfDelay.value, 10) });
+                }
+            });
+        }
+        const sliderBfCooldown = document.getElementById('slider-bf-cooldown');
+        if (sliderBfCooldown) {
+            sliderBfCooldown.addEventListener('input', () => {
+                const lbl = document.getElementById('lbl-bf-cooldown');
+                if (lbl) lbl.textContent = parseFloat(sliderBfCooldown.value).toFixed(1);
+                if (ws && ws.connected) {
+                    ws.send({ type: 'back_flash_config', cooldown_s: parseFloat(sliderBfCooldown.value) });
+                }
+            });
+        }
+        // 接收背闪状态 (独立消息 + state 内嵌)
+        ws.on('back_flash_state', (data) => {
+            updateBackflashUI(data);
+        });
 
         // 预测帧数
         const sliderPrediction = document.getElementById('slider-prediction');
@@ -363,6 +431,8 @@
         const jitter = parseFloat(el('slider-jitter')?.value) ?? 0.15;
         const fov = parseInt(el('slider-fov')?.value) ?? 300;
         const fovDyn = parseFloat(el('slider-fov-dyn')?.value) ?? 0.10;
+        const fovPullEnabled = !!el('chk-fov-pull')?.checked;
+        const fovPullSpeed = parseInt(el('slider-fov-pull-speed')?.value) ?? 8;
         const sniperFrames = parseInt(el('slider-sniper-frames')?.value) ?? 10;
         const sniperAi = parseFloat(el('slider-sniper-ai')?.value) ?? 1.0;
         const sniperDeadzone = parseInt(el('slider-sniper-deadzone')?.value) ?? 10;
@@ -387,6 +457,8 @@
             prediction_ticks: prediction,
             fov_radius: fov,
             fov_dynamic_gain: fovDyn,
+            fov_pull_enabled: fovPullEnabled,
+            fov_pull_speed: fovPullSpeed,
             sniper_confirm_frames: sniperFrames,
             sniper_ai_scale: sniperAi,
             sniper_deadzone: sniperDeadzone,
@@ -869,6 +941,10 @@ function onState(data) {
             state.lockMode = data.lock_mode;
             updateLockUI(data.lock_mode);
         }
+        // 背闪状态
+        if (data.back_flash) {
+            updateBackflashUI(data.back_flash);
+        }
         // 同步滑块与后端配置
         if (data.config) {
             syncSliders(data.config);
@@ -876,6 +952,61 @@ function onState(data) {
             if (data.config.trigger_enabled !== undefined) {
                 state.triggerEnabled = data.config.trigger_enabled;
                 updateTriggerUI(data.config.trigger_enabled);
+            }
+        }
+    }
+
+    // 更新自动背闪 UI (开关 + 状态)
+    function updateBackflashUI(data) {
+        const chk = document.getElementById('chk-backflash');
+        const lbl = document.getElementById('lbl-backflash-status');
+        const hint = document.getElementById('backflash-hint');
+        if (chk && data.enabled !== undefined) chk.checked = data.enabled;
+        // 倍数 slider 同步 (后端可能因 clamp 修正过值)
+        if (data.playback_speed !== undefined) {
+            const s = document.getElementById('slider-bf-speed');
+            const l = document.getElementById('lbl-bf-speed');
+            if (s) { s.value = Math.min(3.0, Math.max(0.5, data.playback_speed)); }
+            if (l) l.textContent = Number(s ? s.value : data.playback_speed).toFixed(2);
+        }
+        if (data.move_scale !== undefined) {
+            const s = document.getElementById('slider-bf-scale');
+            const l = document.getElementById('lbl-bf-scale');
+            if (s) { s.value = Math.min(10.0, Math.max(0.5, data.move_scale)); }
+            if (l) l.textContent = Number(s ? s.value : data.move_scale).toFixed(2);
+        }
+        if (data.delay_ms !== undefined) {
+            const s = document.getElementById('slider-bf-delay');
+            const l = document.getElementById('lbl-bf-delay');
+            if (s) { s.value = Math.min(1000, Math.max(10, data.delay_ms)); }
+            if (l) l.textContent = s ? s.value : data.delay_ms;
+        }
+        if (data.cooldown_s !== undefined) {
+            const s = document.getElementById('slider-bf-cooldown');
+            const l = document.getElementById('lbl-bf-cooldown');
+            if (s) { s.value = Math.min(5.0, Math.max(0.3, data.cooldown_s)); }
+            if (l) l.textContent = Number(s ? s.value : data.cooldown_s).toFixed(1);
+        }
+        if (lbl) {
+            if (data.active) {
+                lbl.textContent = '🔄 转身中';
+                lbl.style.color = 'var(--accent)';
+            } else if (data.enabled && data.loaded) {
+                lbl.textContent = `✅ 已就绪 (${data.trigger_count || 0}次)`;
+                lbl.style.color = 'var(--status-ok)';
+            } else if (data.enabled && !data.loaded) {
+                lbl.textContent = '⚠️ 无轨迹';
+                lbl.style.color = 'var(--status-warn)';
+            } else {
+                lbl.textContent = '';
+            }
+        }
+        if (hint) {
+            if (data.enabled && !data.loaded) {
+                hint.textContent = '未找到轨迹文件 → 运行 tools/record_backflash.py 录制';
+                hint.style.color = 'var(--status-warn)';
+            } else {
+                hint.textContent = data.traj_duration_ms ? `轨迹 ${data.traj_duration_ms}ms` : '';
             }
         }
     }
@@ -915,6 +1046,17 @@ function onState(data) {
         if (sliderFovDyn && config.fov_dynamic_gain !== undefined) {
             sliderFovDyn.value = config.fov_dynamic_gain;
             if (lblFovDyn) lblFovDyn.textContent = parseFloat(config.fov_dynamic_gain).toFixed(2);
+        }
+        // FOV外慢速引导
+        const chkFovPull = document.getElementById('chk-fov-pull');
+        if (chkFovPull && config.fov_pull_enabled !== undefined) {
+            chkFovPull.checked = !!config.fov_pull_enabled;
+        }
+        const sliderFovPull = document.getElementById('slider-fov-pull-speed');
+        const lblFovPull = document.getElementById('lbl-fov-pull-speed');
+        if (sliderFovPull && config.fov_pull_speed !== undefined) {
+            sliderFovPull.value = config.fov_pull_speed;
+            if (lblFovPull) lblFovPull.textContent = config.fov_pull_speed;
         }
         // 狙击确认帧数
         const sliderSniperFrames = document.getElementById('slider-sniper-frames');

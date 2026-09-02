@@ -251,6 +251,20 @@
                     <div class="hint-text">每 1px 目标框高增加的范围 (框越高范围越大)</div>
                 </div>
                 <div class="form-group">
+                    <label class="switch-label" style="display:flex;align-items:center;gap:8px;">
+                        <label class="switch" style="margin:0;">
+                            <input type="checkbox" id="chk-fov-pull">
+                            <span class="slider"></span>
+                        </label>
+                        FOV外慢速引导
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>引导速度 <span id="lbl-fov-pull-speed">2</span>px/帧</label>
+                    <input type="range" id="slider-fov-pull-speed" min="1" max="50" step="1" value="2">
+                    <div class="hint-text">目标超出 FOV 时缓慢转向目标 (不锁不PID), 进入 FOV 后自瞄接管</div>
+                </div>
+                <div class="form-group">
                     <label>狙击确认帧数 <span id="lbl-sniper-frames">10</span>帧</label>
                     <input type="range" id="slider-sniper-frames" min="0" max="100" step="5" value="10">
                     <div class="hint-text">狙击模式: 目标连续检出达到此帧数才允许扳机 (0=不要求)</div>
@@ -295,10 +309,39 @@
                     <label>目标类别优先级</label>
                     <select id="target-priority-select">
                         <option value="-1" selected>全部 (最近)</option>
-                        <option value="0">仅头部 (head)</option>
-                        <option value="1">仅身体 (body)</option>
-                        <option value="2">仅武器 (weapon)</option>
+                        <option value="0">仅身体 (body)</option>
+                        <option value="1">仅头部 (head)</option>
+                        <option value="2">仅队友 (teammate)</option>
+                        <option value="3">仅可破坏物 (breakable)</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label class="switch-label" style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                        <label class="switch" style="margin:0;">
+                            <input type="checkbox" id="chk-backflash">
+                            <span class="slider"></span>
+                        </label>
+                        自动背闪 <span id="lbl-backflash-status" style="color:var(--text-muted);font-size:12px;"></span>
+                    </label>
+                    <div class="hint-text" id="backflash-hint" style="margin-left:4px;">需先录制轨迹 (tools/record_backflash.py); 检测到闪光自动转身</div>
+                </div>
+                <div id="backflash-controls">
+                    <div class="form-group">
+                        <label>背闪速度 <span id="lbl-bf-speed">1.00</span>x <span class="hint-text">(1=人手原速, &gt;1 反应更快)</span></label>
+                        <input type="range" id="slider-bf-speed" min="0.5" max="3.0" step="0.05" value="1.0">
+                    </div>
+                    <div class="form-group">
+                        <label>转身幅度 <span id="lbl-bf-scale">3.00</span>x <span class="hint-text">(转身角度倍数, 默认 3 适配低灵敏度)</span></label>
+                        <input type="range" id="slider-bf-scale" min="0.5" max="10.0" step="0.1" value="3.0">
+                    </div>
+                    <div class="form-group">
+                        <label>背闪延迟 <span id="lbl-bf-delay">50</span>ms <span class="hint-text">(看到闪光后延迟再转身)</span></label>
+                        <input type="range" id="slider-bf-delay" min="10" max="1000" step="10" value="50">
+                    </div>
+                    <div class="form-group">
+                        <label>触发冷却 <span id="lbl-bf-cooldown">1.0</span>s <span class="hint-text">(两次转身的最短间隔, 小=连闪都躲)</span></label>
+                        <input type="range" id="slider-bf-cooldown" min="0.3" max="5.0" step="0.1" value="1.0">
+                    </div>
                 </div>
                 <div class="form-group row-group">
                     <div class="offset-group">
