@@ -23,7 +23,7 @@ PKG_SIZE = 6
 FLAG_LEFT_BUTTON = 1 << 0
 FLAG_RIGHT_BUTTON = 1 << 1
 FLAG_MIDDLE_BUTTON = 1 << 2
-FLAG_WHEEL_VALID = 1 << 3
+FLAG_WHEEL_VALID = 1 << 6  # bit6, 避开 bit3 (HID 后退键位)
 FLAG_BACK_BUTTON = 1 << 4    # 鼠标侧键 - 后退 (X1)
 FLAG_FORWARD_BUTTON = 1 << 5 # 鼠标侧键 - 前进 (X2)
 

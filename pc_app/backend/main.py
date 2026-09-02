@@ -74,8 +74,13 @@ class MouseForwarderBackend:
         self.serial_baud = serial_baud
         self.model_path = model_path
         
-        # 组件 - pynput 鼠标捕获 (经过系统处理, 手感自然)
-        self.mouse = MouseMonitor(on_event=self._on_mouse_event)
+        # 组件 - 鼠标捕获 (混合模式)
+        #   pynput: 按钮/滚轮 (点击/拖动/侧键可靠)
+        #   raw input: 移动 (FPS 光标锁定也有效)
+        from raw_mouse import RawMouseMonitor
+        self.mouse = MouseMonitor(on_event=self._on_mouse_event, buttons_only=True)
+        self.raw_mouse = RawMouseMonitor(on_event=self._on_raw_mouse_event)
+        self._mouse_source = 'raw'  # 'raw' = 混合模式, 'pynput' = 纯 pynput
         self.serial = SerialForwarder(baudrate=serial_baud)
         self.serial.set_connection_callback(self._on_serial_connection)
         
@@ -99,6 +104,21 @@ class MouseForwarderBackend:
         # 按住左键才自瞄 (False = 一直自瞄)
         self._aim_require_lmb = bool(self.config.get('trajectory', 'aim_require_lmb', default=False))
 
+        # 狙击模式: 右键按下时刻 (开镜计时) + 上一帧右键状态 (上升沿检测)
+        self._rmb_press_time = 0.0
+        self._rmb_was_down = False
+        # 狙击模式: 目标连续检出帧数 (达标后才允许扳机)
+        self._sniper_detect_frames = 0
+        # X轴过冲检测: 上一帧AI步dx符号 + 过冲暂停剩余帧数
+        self._last_ai_dx_sign = 0
+        self._overshoot_pause_left = 0
+        # 帧去重: 上次已推理的帧序号
+        self._last_frame_seq = -1
+        # 独立推理线程池 (与 JPEG 编码的默认线程池隔离, 避免排队竞争)
+        import concurrent.futures
+        self._infer_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix='infer')
+
         # 从持久化配置恢复轨迹参数
         traj_cfg = self.config.get('trajectory', default={})
         if traj_cfg:
@@ -114,6 +134,13 @@ class MouseForwarderBackend:
                 self._trajectory_enabled = bool(traj_cfg['enabled'])
                 self.trajectory.config.enabled = self._trajectory_enabled
             logger.info(f"Loaded trajectory config from saved settings")
+
+        # 全局固定参数: 抖动/预测帧数/积分/速度前馈 恒为 0, 禁止调节 (UI 禁用 + 后端拒绝)
+        self._fixed_params = ('jitter_amount', 'prediction_ticks', 'ki', 'velocity_ff')
+        # 强制为 0 (在配置恢复之后, 覆盖 config.json 里的旧值)
+        for k in self._fixed_params:
+            setattr(self.trajectory.config, k, 0)
+        logger.info(f"Fixed params forced to 0: {self._fixed_params}")
 
         # WebSocket 客户端
         self._ws_client: Optional[Any] = None
@@ -138,8 +165,20 @@ class MouseForwarderBackend:
         
         self._trajectory_enabled = True
         self._show_video = False  # 默认关闭画面显示
-        self._lock_mode = False  # 锁定模式: 全屏黑幕
+        self._lock_mode = False  # 锁定模式: 全屏状态面板
         self._keyboard_listener = None  # Escape 键监听器
+        # 采集卡+模型就绪后自动进入锁定模式 (可在 config.json 的 lock.auto_lock 关闭)
+        self._auto_lock = bool(self.config.get('lock', 'auto_lock', default=True))
+
+        # 锁定面板数据 (tkinter 线程只读, 主循环定期刷新)
+        self._overlay_data = {
+            'capture': {'active': False, 'camera': 0, 'format': '-', 'width': 0, 'height': 0, 'fps': 0.0},
+            'model': {'loaded': False, 'name': '-'},
+            'detect': {'count': 0, 'dist': None, 'dist_cls': None, 'dist_conf': 0.0,
+                       'settled': False, 'has_target': False, 'fov_dyn': 0.0,
+                       'inference_ms': 0.0, 'inf_fps': 0.0, 'frame_age_ms': 0.0},
+            'serial': {'connected': False, 'port': None},
+        }
         
         # 管线帧率统计
         self._pipeline_fps = 0.0
@@ -180,8 +219,13 @@ class MouseForwarderBackend:
         else:
             logger.info("CH32V305 not found, will wait for connection")
         
-        # 启动鼠标监听
-        self.mouse.start()
+        # 启动鼠标监听 (混合模式: pynput 按钮 + raw 移动, 或纯 pynput)
+        self._mouse_source = self.config.get('mouse', 'source', default='raw')
+        if self._mouse_source == 'pynput':
+            self.mouse.start()
+        else:
+            self.raw_mouse.start()
+            self.mouse.start()  # pynput 仍启动 (提供按钮状态)
         self._mouse_active = True
         
         # 自动查找模型: 优先用启动参数, 其次自动检测, 最后用最后加载的
@@ -227,6 +271,12 @@ class MouseForwarderBackend:
     
     async def stop(self):
         """停止后端服务"""
+        # 释放独立推理线程池
+        if getattr(self, '_infer_executor', None):
+            try:
+                self._infer_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
         # 退出锁定模式 (恢复鼠标监听)
         if self._lock_mode:
             if self._keyboard_listener:
@@ -250,7 +300,14 @@ class MouseForwarderBackend:
         if self.capture_card:
             await self.capture_card.stop()
         
-        self.mouse.stop()
+        # 停止鼠标监听 (按当前源)
+        try:
+            if self._mouse_source == 'pynput':
+                self.mouse.stop()
+            else:
+                self.raw_mouse.stop()
+        except Exception:
+            pass
         await self.serial.disconnect()
         logger.info("Backend stopped")
     
@@ -264,7 +321,12 @@ class MouseForwarderBackend:
             from capture_card import CaptureCard
             from object_detector import ObjectDetector
             
-            self.capture_card = CaptureCard(camera_index=0)
+            self.capture_card = CaptureCard(
+                camera_index=0,
+                use_ffmpeg=bool(self.config.get('video', 'use_ffmpeg', default=True)),
+                crop_size=int(self.config.get('video', 'crop_size', default=640)),
+                capture_format=str(self.config.get('video', 'capture_format', default='nv12')),
+            )
             self.detector = ObjectDetector()
             
             # 加载模型 (在后台线程中执行, 避免阻塞)
@@ -273,8 +335,14 @@ class MouseForwarderBackend:
             self.detector.CONFIDENCE_THRESHOLD = self.trajectory.config.min_confidence
             # 更新类别名称 (与实际模型匹配)
             await asyncio.to_thread(update_class_names, model_path)
+            # 恢复推理中心裁剪尺寸 (256-1080, 0=默认)
+            cc_val = int(self.config.get('video', 'center_crop', default=0) or 0)
+            self.detector.center_crop_size = cc_val
             # 保存最后加载的模型路径
             self.config.set('model', 'last_path', model_path)
+            # 记录模型信息 (锁定面板显示用)
+            self._overlay_data['model'].update(
+                loaded=True, name=os.path.basename(model_path))
             
             logger.info("Detection pipeline initialized")
             
@@ -301,8 +369,9 @@ class MouseForwarderBackend:
                 ms2130_idx = await asyncio.to_thread(CaptureCard.find_capture_card)
                 logger.info(f"Auto-detected capture card at index {ms2130_idx}")
             except Exception as e:
-                logger.warning(f"Auto-detect failed: {e}, using index 0")
-                ms2130_idx = 0
+                # 检测失败时回退到常用采集卡位置 (index 1), 绝不用 index 0 (内置摄像头)
+                logger.warning(f"Auto-detect failed: {e}, using index 1 (capture card)")
+                ms2130_idx = 1
             await self._start_capture(ms2130_idx)
         except Exception as e:
             logger.error(f"Auto-start capture failed: {e}")
@@ -312,11 +381,14 @@ class MouseForwarderBackend:
         try:
             if not self.capture_card:
                 from capture_card import CaptureCard
-                # 从配置读取采集参数 (分辨率/帧率)
+                # 从配置读取采集参数 (分辨率/帧率/硬解/裁剪/格式)
                 vcfg = self.config.get('video', default={})
                 self.capture_card = CaptureCard(
                     camera_index=camera_index,
                     target_fps=int(vcfg.get('capture_fps', 240)),
+                    use_ffmpeg=bool(vcfg.get('use_ffmpeg', True)),
+                    crop_size=int(vcfg.get('crop_size', 640)),
+                    capture_format=str(vcfg.get('capture_format', 'nv12')),
                 )
                 self.capture_card._target_width = int(vcfg.get('capture_width', 1920))
                 self.capture_card._target_height = int(vcfg.get('capture_height', 1080))
@@ -327,6 +399,14 @@ class MouseForwarderBackend:
             
             if success:
                 self._capture_active = True
+                # 记录采集卡状态 (锁定面板显示用)
+                cc = self.capture_card
+                self._overlay_data['capture'].update(
+                    active=True, camera=camera_index,
+                    format=cc.capture_format if cc else '-',
+                    width=cc.actual_width if cc else 0,
+                    height=cc.actual_height if cc else 0,
+                )
                 # 启动检测管道
                 self._pipeline_task = asyncio.create_task(self._detection_loop())
                 await self._send({
@@ -336,6 +416,9 @@ class MouseForwarderBackend:
                     'format': self.capture_card.capture_format if self.capture_card else 'mjpeg',
                 })
                 logger.info(f"Capture started on camera {camera_index}")
+                # 采集卡+模型都就绪 → 自动进入锁定模式
+                if self._auto_lock and self.detector and self.detector.is_loaded:
+                    asyncio.create_task(self._delayed_lock(2.0))
             else:
                 await self._send({
                     'type': 'capture_status',
@@ -371,6 +454,7 @@ class MouseForwarderBackend:
         
         self._capture_active = False
         self._detection_active = False
+        self._overlay_data['capture']['active'] = False
         
         await self._send({
             'type': 'capture_status',
@@ -404,17 +488,17 @@ class MouseForwarderBackend:
             time.sleep(0.005)
 
     async def _lock_mode_on(self):
-        """进入锁定模式: 弹出全屏黑幕, 鼠标不控制本机, 按 Escape 退出"""
+        """进入锁定模式: 全屏状态面板 (不可点击), 鼠标只转发到目标 PC, 按 Escape 退出"""
         if self._lock_mode:
             return
 
         self._lock_mode = True
-        logger.info("Lock mode ON - showing black overlay")
+        logger.info("Lock mode ON - showing fullscreen status panel")
 
-        # 启动独立回中线程 (超出中心 ±480×270 范围时回中)
+        # 启动独立回中线程 (超出中心 ±950×500 范围时回中)
         threading.Thread(target=self._recenter_loop, daemon=True).start()
 
-        # 隐藏系统光标
+        # 全屏状态面板 (tkinter, 无边框置顶, 捕获所有输入不可点击)
         self._overlay_thread = None
         self._overlay_root = None
         self._overlay_stop = threading.Event()
@@ -432,21 +516,150 @@ class MouseForwarderBackend:
                 screen_h = root.winfo_screenheight()
                 root.geometry(f'{screen_w}x{screen_h}+0+0')
                 root.focus_force()
-                root.grab_set()  # 捕获所有输入
-
+                root.grab_set()  # 捕获所有输入 (不可点击)
                 # 阻止 Alt+F4 关闭
                 root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-                # 轮询检查是否需要关闭
-                def check_stop():
+                # ---------- 状态面板 ----------
+                BG = '#0b0e14'
+                FG_TITLE = '#ff5252'
+                FG_SEC = '#5f6b7a'
+                FG_LBL = '#9aa5b1'
+                FG_VAL = '#e6edf3'
+                FG_OK = '#3fb950'
+                FG_WARN = '#d29922'
+                FONT_T = ('Microsoft YaHei UI', 20, 'bold')
+                FONT_SEC = ('Microsoft YaHei UI', 11, 'bold')
+                FONT_ROW = ('Microsoft YaHei UI', 12)
+
+                panel = tk.Frame(root, bg=BG, padx=44, pady=26,
+                                 highlightbackground='#232a33', highlightthickness=1)
+                panel.place(relx=0.5, rely=0.5, anchor='center')
+
+                tk.Label(panel, text='🔒 锁定模式 — Mouse Forwarder', bg=BG, fg=FG_TITLE,
+                         font=FONT_T).grid(row=0, column=0, columnspan=2, pady=(0, 10))
+
+                self._ov_widgets = {}
+                grid_row = [1]
+
+                def hdr(text):
+                    tk.Label(panel, text=text, bg=BG, fg=FG_SEC, font=FONT_SEC, anchor='w').grid(
+                        row=grid_row[0], column=0, columnspan=2, sticky='w', pady=(8, 2))
+                    grid_row[0] += 1
+
+                def row(key, label):
+                    tk.Label(panel, text=label, bg=BG, fg=FG_LBL, font=FONT_ROW, anchor='w').grid(
+                        row=grid_row[0], column=0, sticky='w', padx=(0, 24), pady=2)
+                    val = tk.Label(panel, text='-', bg=BG, fg=FG_VAL, font=FONT_ROW, anchor='w')
+                    val.grid(row=grid_row[0], column=1, sticky='w')
+                    self._ov_widgets[key] = val
+                    grid_row[0] += 1
+
+                hdr('采集卡')
+                row('cap_status', '状态')
+                row('cap_detail', '分辨率 / 格式')
+                row('cap_fps', '管线帧率')
+                hdr('模型 / 识别')
+                row('model', '检测模型')
+                row('inference', '推理耗时')
+                row('detect_count', '识别目标')
+                row('nearest', '最近目标')
+                row('settled', '对准状态')
+                hdr('转发')
+                row('serial', '串口')
+                row('packets', '已发送包')
+                row('uptime', '运行时间')
+                hdr('参数')
+                row('aim', '自瞄')
+                row('mouse', '物理鼠标')
+                row('trigger', '自动扳机')
+                row('pid', 'PID')
+                row('misc', '死区 / 滞回 / Y轴')
+
+                tk.Label(panel, text='按 ESC 退出锁定模式', bg=BG, fg=FG_WARN,
+                         font=('Microsoft YaHei UI', 11)).grid(
+                    row=grid_row[0], column=0, columnspan=2, pady=(16, 0))
+
+                # ---------- 刷新状态 ----------
+                def setv(key, text, color=FG_VAL):
+                    wdg = self._ov_widgets.get(key)
+                    if wdg:
+                        wdg.config(text=text, fg=color)
+
+                def refresh_panel():
+                    od = self._overlay_data
+                    cc = od['capture']
+                    dc = od['detect']
+                    md = od['model']
+                    sr = od['serial']
+                    c = self.trajectory.config
+
+                    if cc['active']:
+                        res = f"{cc['width']}x{cc['height']}" if cc['width'] else '-'
+                        setv('cap_status', '运行中', FG_OK)
+                        setv('cap_detail', f"Camera {cc['camera']}  |  {cc['format'].upper()}  |  {res}")
+                        setv('cap_fps', f"采集 {cc['fps']:.0f} | 管线 {self._pipeline_fps:.0f}")
+                    else:
+                        setv('cap_status', '已停止', FG_WARN)
+                        setv('cap_detail', '-')
+                        setv('cap_fps', '-')
+
+                    setv('model', md['name'] if md['loaded'] else '未加载',
+                         FG_OK if md['loaded'] else FG_WARN)
+                    if dc['inference_ms'] > 0:
+                        setv('inference', f"{dc['inference_ms']:.1f} ms  ({dc['inf_fps']:.0f} fps)  帧龄 {dc['frame_age_ms']:.0f}ms")
+                    else:
+                        setv('inference', '-')
+                    setv('detect_count', f"{dc['count']} 个")
+                    if dc['has_target'] and dc['dist'] is not None:
+                        setv('nearest', f"{dc['dist_cls']}  {dc['dist']:.1f}px  (conf {dc['dist_conf']:.2f})")
+                    else:
+                        setv('nearest', '无')
+                    setv('settled', '已对准' if dc['settled'] else '跟踪中',
+                         FG_OK if dc['settled'] else FG_WARN)
+
+                    if sr['connected']:
+                        setv('serial', sr['port'] or '已连接', FG_OK)
+                    else:
+                        setv('serial', '未连接', FG_WARN)
+                    setv('packets', f"{self.stats['packets_sent']:,} 包")
+                    uptime = int(time.time() - self.start_time)
+                    setv('uptime', f"{uptime // 3600:02d}:{uptime % 3600 // 60:02d}:{uptime % 60:02d}")
+
+                    aim_mode = '按住左键' if self._aim_require_lmb else '一直自瞄'
+                    sniper = '开' if self.mouse._buttons_state & 2 else '关'
+                    # FOV: 有目标时显示当前动态范围, 无目标显示基准值
+                    fov_text = f"{dc['fov_dyn']:.0f}px" if dc['has_target'] and dc['fov_dyn'] > 0 else f"{c.fov_radius}px(基准)"
+                    setv('aim',
+                         f"{'开' if self._trajectory_enabled else '关'}  |  {aim_mode}"
+                         f"  |  FOV {fov_text}  |  置信 {c.min_confidence:.2f}"
+                         f"  |  AI x{c.ai_scale:.1f}  |  平滑 {c.smooth_factor:.2f}"
+                         f"  |  步长 {c.max_step_px}px  |  动态+{c.fov_dynamic_gain:.2f}/px"
+                         f"  |  狙击{sniper}")
+                    scale = getattr(self, '_mouse_scale', 1)
+                    setv('mouse', f"x{scale}  |  {self._mouse_source}")
+                    setv('trigger',
+                         f"{'开' if self._trigger_enabled else '关'}  |  阈值 {self._trigger_threshold}px")
+                    setv('pid',
+                         f"Kp {c.kp:.2f}  |  Ki {c.ki:.2f}  |  Kd {c.kd:.2f}  |  前馈 {c.velocity_ff:.2f}")
+                    setv('misc',
+                         f"死区 {c.settle_deadzone:.0f}  |  滞回 {c.unsettle_hysteresis:.0f}"
+                         f"  |  Y轴 {c.y_scale:.2f}")
+
+                # 每 200ms 刷新一次 (同时检查是否需要关闭)
+                def refresh():
                     if self._overlay_stop.is_set():
                         try:
                             root.destroy()
                         except Exception:
                             pass
                         return
-                    root.after(100, check_stop)
-                root.after(100, check_stop)
+                    try:
+                        refresh_panel()
+                    except Exception:
+                        pass
+                    root.after(200, refresh)
+                refresh()
 
                 root.mainloop()
             except ImportError:
@@ -479,6 +692,8 @@ class MouseForwarderBackend:
             'type': 'lock_mode_status',
             'enabled': True,
         })
+        # 同步前端滑块 (锁定参数显示为 0 并禁用)
+        await self._send_state()
 
     async def _lock_mode_off(self):
         """退出锁定模式"""
@@ -513,6 +728,75 @@ class MouseForwarderBackend:
             'type': 'lock_mode_status',
             'enabled': False,
         })
+        # 同步前端滑块 (恢复原值并解除禁用)
+        await self._send_state()
+
+    async def _delayed_lock(self, delay: float = 2.0):
+        """延迟自动进入锁定模式 (留出查看初始化结果的时间)
+
+        采集卡+模型都就绪后由 _start_capture / load_model 触发。
+        """
+        try:
+            await asyncio.sleep(delay)
+            if self._auto_lock and not self._lock_mode and self._capture_active:
+                logger.info("Auto lock mode ON (capture + model ready)")
+                await self._lock_mode_on()
+        except asyncio.CancelledError:
+            pass
+
+    # ================================================================
+    # 参数方案 (5 套预设, 保存/应用)
+    # ================================================================
+
+    # 方案可保存的参数 (轨迹/PID/扳机/鼠标, 固定参数抖动/预测/Ki/前馈 除外)
+    PRESET_KEYS = (
+        'smooth_factor', 'max_step_px', 'min_confidence', 'target_offset_x',
+        'target_offset_y', 'target_priority', 'fov_radius', 'fov_dynamic_gain',
+        'sniper_fov_multiplier', 'sniper_trigger_multiplier', 'sniper_ai_scale',
+        'sniper_deadzone', 'sniper_hysteresis', 'sniper_scope_time',
+        'sniper_confirm_frames', 'overshoot_pause_frames',
+        'ai_scale', 'invert_ai_x', 'invert_ai_y',
+        'kp', 'kd', 'integral_limit',
+        'max_steps_per_frame', 'settle_deadzone', 'unsettle_hysteresis',
+        'y_scale', 'enabled',
+    )
+
+    def _preset_collect(self) -> dict:
+        """收集当前生效参数 (保存到方案)"""
+        c = self.trajectory.config
+        p = {k: getattr(c, k) for k in self.PRESET_KEYS if hasattr(c, k)}
+        p['trigger_enabled'] = self._trigger_enabled
+        p['trigger_threshold'] = self._trigger_threshold
+        p['aim_require_lmb'] = self._aim_require_lmb
+        return p
+
+    def _preset_apply(self, params: dict):
+        """应用方案参数到当前配置 (固定参数仍强制 0)"""
+        c = self.trajectory.config
+        for k, v in params.items():
+            if hasattr(c, k):
+                setattr(c, k, v)
+        for k in self._fixed_params:
+            setattr(c, k, 0)
+        if 'trigger_enabled' in params:
+            self._trigger_enabled = bool(params['trigger_enabled'])
+        if 'trigger_threshold' in params:
+            self._trigger_threshold = int(params['trigger_threshold'])
+        if 'aim_require_lmb' in params:
+            self._aim_require_lmb = bool(params['aim_require_lmb'])
+        # 同步置信度阈值到检测器
+        if self.detector:
+            self.detector.CONFIDENCE_THRESHOLD = c.min_confidence
+
+    def _persist_trajectory(self):
+        """把当前轨迹/扳机/鼠标参数持久化到 config.json"""
+        c = self.trajectory.config
+        for k in self.PRESET_KEYS:
+            if hasattr(c, k):
+                self.config.set('trajectory', k, getattr(c, k))
+        self.config.set('trajectory', 'trigger_enabled', self._trigger_enabled)
+        self.config.set('trajectory', 'trigger_threshold', self._trigger_threshold)
+        self.config.set('trajectory', 'aim_require_lmb', self._aim_require_lmb)
 
     async def _detection_loop(self):
         """检测管道主循环 (无帧率限制, 尽可能快)"""
@@ -520,7 +804,7 @@ class MouseForwarderBackend:
         
         # 帧发送限频 (每秒最多 20 帧)
         last_frame_time = 0
-        frame_interval = 0.05
+        frame_interval = 0.066  # 画面帧发送限频 ~15fps (检测/瞄准用本地帧, 画面帧只供显示)
         
         while self._capture_active and self.capture_card:
             try:
@@ -531,8 +815,17 @@ class MouseForwarderBackend:
                 if frame is None:
                     await asyncio.sleep(0.001)
                     continue
+
+                # 帧去重: 同一帧 (序号未变) 不重复推理, 等新帧
+                seq = self.capture_card.frame_seq
+                if seq == self._last_frame_seq:
+                    await asyncio.sleep(0.001)
+                    continue
+                self._last_frame_seq = seq
+                # 帧龄 (端到端延迟: 当前时间 - 采集时刻)
+                frame_age = (time.time() - self.capture_card.frame_ts) * 1000 if self.capture_card.frame_ts else 0.0
                 
-                # 管线帧率统计 (只统计实际处理的帧)
+                # 管线帧率统计 (墙钟口径 = 实际帧率, 不会超过采集帧率)
                 self._pipeline_fps_count += 1
                 fps_now = time.time()
                 if self._pipeline_fps_timer == 0:
@@ -542,22 +835,74 @@ class MouseForwarderBackend:
                     self._pipeline_fps = self._pipeline_fps_count / fps_elapsed
                     self._pipeline_fps_count = 0
                     self._pipeline_fps_timer = fps_now
+                t_read = time.perf_counter()
                 
-                # 执行检测 (在线程池运行, 不阻塞事件循环)
+                # 执行检测 (独立推理线程池, 不阻塞事件循环也不与编码争线程)
                 if self.detector and self.detector.is_loaded:
-                    detections = await asyncio.to_thread(
-                        self.detector.detect, frame, frame.shape[:2]
+                    detections = await asyncio.get_running_loop().run_in_executor(
+                        self._infer_executor, self.detector.detect, frame, frame.shape[:2]
                     )
                 else:
                     detections = []
-                
-                self.stats['detections'] = len(detections)
 
-                # 每 30 帧打印当前配置状态 + 最近目标距离
+                # 裁剪模式 (ffmpeg 中心裁剪): 检测框坐标从裁剪帧系映射回全屏系
+                if self.capture_card.crop_offset_x or self.capture_card.crop_offset_y:
+                    ox = self.capture_card.crop_offset_x
+                    oy = self.capture_card.crop_offset_y
+                    detections = [
+                        Detection(x=d.x + ox, y=d.y + oy, w=d.w, h=d.h,
+                                  confidence=d.confidence, class_id=d.class_id,
+                                  cx=d.cx + ox, cy=d.cy + oy)
+                        for d in detections
+                    ]
+                
+                # 狙击模式 (按住右键): 自瞄范围 ×倍率 (默认3倍)
+                self.trajectory.sniper_mode = bool(self.mouse._buttons_state & 2)
+
+                self.stats['detections'] = len(detections)
+                t_detect = time.perf_counter()
+
+                # 定期刷新锁定面板数据 (0.5s, 供全屏状态面板显示)
+                if time.time() - getattr(self, '_ov_refresh_t', 0) >= 0.5:
+                    self._ov_refresh_t = time.time()
+                    sel = self.trajectory.selected_target
+                    od = self._overlay_data['detect']
+                    self._overlay_data['capture']['fps'] = self.capture_card.capture_fps
+                    od['count'] = len(detections)
+                    od['settled'] = bool(self.trajectory.is_settled)
+                    od['has_target'] = sel is not None
+                    od['frame_age_ms'] = frame_age
+                    # 当前目标的动态自瞄范围 (随框高变化)
+                    od['fov_dyn'] = self.trajectory.dynamic_fov(sel.h) if sel else 0.0
+                    if sel:
+                        od['dist'] = ((sel.cx - self._screen_w / 2) ** 2 +
+                                      (sel.cy - self._screen_h / 2) ** 2) ** 0.5
+                        try:
+                            from capture_inference import CLASS_NAMES
+                            od['dist_cls'] = CLASS_NAMES[sel.class_id] if sel.class_id < len(CLASS_NAMES) else f'cls{sel.class_id}'
+                        except Exception:
+                            od['dist_cls'] = f'cls{sel.class_id}'
+                        od['dist_conf'] = sel.confidence
+                    else:
+                        od['dist'] = None
+                        od['dist_cls'] = None
+                        od['dist_conf'] = 0.0
+                    if self.detector:
+                        od['inference_ms'] = self.detector.avg_inference_time_ms
+                        od['inf_fps'] = (1000 / self.detector.avg_inference_time_ms
+                                         if self.detector.avg_inference_time_ms > 0 else 0)
+
+                # 每 300 帧打印状态 + 耗时分解 (定位管线瓶颈用)
                 if not hasattr(self, '_status_count'):
                     self._status_count = 0
+                    self._t_read = 0.0
+                    self._t_detect = 0.0
+                    self._t_body = 0.0
+                    self._t_total = 0.0
                 self._status_count += 1
-                if self._status_count % 30 == 0:
+                if self._status_count % 300 == 0:
+                    print(f'[TIMING] read={self._t_read:.2f}ms detect={self._t_detect:.2f}ms body={self._t_body:.2f}ms total={self._t_total:.2f}ms', flush=True)
+                    self._t_read = self._t_detect = self._t_body = self._t_total = 0.0
                     c = self.trajectory.config
                     # 计算最近目标到屏幕中心的距离
                     nearest_dist = float('inf')
@@ -582,10 +927,40 @@ class MouseForwarderBackend:
                 lmb_down = bool(self.mouse._buttons_state & 1)
                 if self._aim_require_lmb and not lmb_down:
                     ai_steps = []
+                # 狙击模式: 按住右键只自瞄 X 轴 (Y 轴不动)
+                ai_steps = self._apply_sniper_mode(ai_steps)
+
+                # X轴过冲检测: AI步dx正负变号(过冲) -> 后续 N 帧自瞄不生效
+                pause = self.trajectory.config.overshoot_pause_frames
+                if pause > 0:
+                    if self._overshoot_pause_left > 0:
+                        self._overshoot_pause_left -= 1
+                        ai_steps = []
+                    else:
+                        # 当前帧 dx 总符号 (取第一个非零步)
+                        cur_sign = 0
+                        for sx, sy in ai_steps:
+                            if sx > 0:
+                                cur_sign = 1
+                                break
+                            if sx < 0:
+                                cur_sign = -1
+                                break
+                        if cur_sign != 0 and self._last_ai_dx_sign != 0 and cur_sign != self._last_ai_dx_sign:
+                            # dx 正负翻转 = X轴过冲, 暂停自瞄
+                            self._overshoot_pause_left = pause
+                            ai_steps = []
+                        if cur_sign != 0:
+                            self._last_ai_dx_sign = cur_sign
+                else:
+                    self._last_ai_dx_sign = 0
+                    self._overshoot_pause_left = 0
+
                 if ai_steps and self._trajectory_enabled and self.serial.is_connected:
                     btns = self.mouse._buttons_state
                     if self._trigger_armed:
                         btns |= 1  # 扳机按下左键
+                    # 同步发送 (不丢步, 保证自瞄指令及时; 步间 1ms 让出事件循环)
                     for i, (dx, dy) in enumerate(ai_steps):
                         packet = encode_packet(btns, dx, dy, 0)
                         await self.serial.send(packet)
@@ -601,13 +976,22 @@ class MouseForwarderBackend:
                 
                 if self._ws_client and send_frame:
                     last_frame_time = now
-                    await self._send_detection_frame(detections, ai_steps, frame)
+                    # 异步发送: JPEG编码+base64+WS传输耗时, 不阻塞检测循环
+                    if not getattr(self, '_frame_send_busy', False):
+                        self._frame_send_busy = True
+                        asyncio.create_task(
+                            self._send_detection_frame_task(detections, ai_steps, frame)
+                        )
                 
-                # 不 sleep, 让循环全速运行
-                # 如果需要限制 CPU 占用, 可以加一个极短的 sleep
+                # 不 sleep, 让循环全速运行 (推理本身已占用 ~3ms, 无额外限速)
+                # 旧版 5ms 下限会导致推理 3.3ms + 等 5ms = 120fps, 已移除
+                # 耗时分解累积 (每 300 帧打印)
+                self._t_read += (t_read - loop_start) * 1000
+                self._t_detect += (t_detect - t_read) * 1000
+                self._t_body += (time.perf_counter() - t_detect) * 1000
+                self._t_total += (time.perf_counter() - loop_start) * 1000
+
                 elapsed = time.perf_counter() - loop_start
-                if elapsed < 0.005:
-                    await asyncio.sleep(0.005 - elapsed)
                 
             except asyncio.CancelledError:
                 break
@@ -627,9 +1011,42 @@ class MouseForwarderBackend:
 
         当目标离屏幕中心的距离小于阈值时, 自动发送鼠标左键按下/释放事件。
         使用 armed 状态防止重复触发。
+        狙击模式: 按住右键时强制启用扳机 (无视扳机开关), 触发范围翻倍。
         """
-        if not self._trigger_enabled:
+        # 狙击模式 (按住右键): 强制启用扳机
+        rmb_down = bool(self.mouse._buttons_state & 2)
+        # 记录右键按下时刻 (上升沿) — 用于狙击开镜计时
+        if rmb_down and not self._rmb_was_down:
+            self._rmb_press_time = time.time()
+        self._rmb_was_down = rmb_down
+
+        # 狙击模式: 目标连续检出帧数 (检出存在即累计, 不要求在 FOV 内; 中断则清零)
+        if rmb_down:
+            if detections:
+                self._sniper_detect_frames += 1
+            else:
+                self._sniper_detect_frames = 0
+        else:
+            self._sniper_detect_frames = 0
+
+        trigger_active = self._trigger_enabled or rmb_down
+
+        if not trigger_active:
             # 如果扳机关闭但之前按下了, 释放
+            if self._trigger_armed:
+                await self._fire_trigger(False)
+                self._trigger_armed = False
+            return
+
+        # 狙击开镜时间: 按住右键后的前 0.28s (sniper_scope_time) 禁止触发扳机
+        if rmb_down and time.time() - self._rmb_press_time < self.trajectory.config.sniper_scope_time:
+            if self._trigger_armed:
+                await self._fire_trigger(False)
+                self._trigger_armed = False
+            return
+
+        # 狙击确认帧: 目标连续检出 sniper_confirm_frames 帧后才允许扳机
+        if rmb_down and self._sniper_detect_frames < self.trajectory.config.sniper_confirm_frames:
             if self._trigger_armed:
                 await self._fire_trigger(False)
                 self._trigger_armed = False
@@ -640,53 +1057,65 @@ class MouseForwarderBackend:
         for d in detections:
             if d.confidence < self.trajectory.config.min_confidence:
                 continue
-            # FOV 范围检查
-            if self.trajectory.config.fov_radius > 0:
-                fov_sq = self.trajectory.config.fov_radius ** 2
-                dist_sq = (d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2
-                if dist_sq > fov_sq:
-                    continue
-                dist = dist_sq ** 0.5
+            # 距离: 狙击模式只用 X 轴距离 (Y 轴忽略), 普通模式欧氏距离
+            dx = d.cx - self._screen_w / 2
+            if rmb_down:
+                dist = abs(dx)
             else:
-                dist = ((d.cx - self._screen_w / 2) ** 2 + (d.cy - self._screen_h / 2) ** 2) ** 0.5
+                dy = d.cy - self._screen_h / 2
+                dist = (dx * dx + dy * dy) ** 0.5
+            # FOV 范围检查 (动态: 随目标框高度变化)
+            if self.trajectory.config.fov_radius > 0:
+                fov_d = self.trajectory.dynamic_fov(d.h)
+                if fov_d > 0 and dist > fov_d:
+                    continue
             if dist < target_dist:
                 target_dist = dist
 
-        # 检查是否在阈值范围内
-        in_range = target_dist <= self._trigger_threshold
+        # 检查是否在阈值范围内 (狙击模式按配置倍数放大, 默认3倍)
+        threshold = self._trigger_threshold * (self.trajectory.config.sniper_trigger_multiplier if rmb_down else 1)
+        in_range = target_dist <= threshold
 
         # 射速限制: 距离上次开枪不足 0.5s 则不触发
         now = time.time()
         if in_range and now - self._trigger_last_fire >= 0.5:
-                # 后台发射两连发 (不阻塞检测循环)
+                # 后台单点一次 (不阻塞检测循环)
                 self._trigger_armed = True
                 self._trigger_last_fire = now
-                asyncio.create_task(self._fire_burst())
+                asyncio.create_task(self._fire_single())
                 self._trigger_armed = False
 
-    async def _fire_burst(self):
-        """后台两连发: 不阻塞检测循环, 匹配 9.75发/秒 (每发 ~102ms)"""
-        # 第1发: press → release
+    async def _fire_single(self):
+        """后台单点一次: press → release (不阻塞检测循环)"""
         await self._fire_trigger(True)
         await asyncio.sleep(0.01)  # 10ms 按键去抖
         await self._fire_trigger(False)
-        # 等待射速间隔
-        await asyncio.sleep(self._trigger_burst_interval)
-        # 第2发: press → release
-        await self._fire_trigger(True)
-        await asyncio.sleep(0.01)
-        await self._fire_trigger(False)
+
+    def _apply_sniper_mode(self, ai_steps):
+        """狙击模式: 按住右键时 AI 轨迹只修正 X 轴 (Y 轴不动), 且用独立的 AI 倍数
+
+        普通 ai_scale 已在 calculate() 内应用, 这里按比例补偿后
+        使狙击模式下总倍率 = sniper_ai_scale。
+        """
+        if self.mouse._buttons_state & 2:
+            base = max(float(self.trajectory.config.ai_scale), 0.01)
+            s = self.trajectory.config.sniper_ai_scale / base
+            steps = [(int(dx * s), 0) for dx, dy in ai_steps]
+            return [(sx, sy) for sx, sy in steps if sx != 0 or sy != 0]
+        return ai_steps
 
     async def _fire_trigger(self, pressed: bool, target_dist: float = -1):
         """
         发送扳机事件 (鼠标左键按下/释放)
 
         直接写串口 (不经过队列, 确保最高优先级)。
+        左键由扳机控制, 其余按钮 (右键/中键/侧键) 保持物理状态,
+        避免狙击模式按住右键开枪时右键状态丢失。
         """
         if pressed:
-            buttons = 1
+            buttons = (self.mouse._buttons_state & ~1) | 1
         else:
-            buttons = 0
+            buttons = self.mouse._buttons_state & ~1
 
         packet = encode_packet(buttons=buttons, dx=0, dy=0, wheel=0)
         if self.serial.is_connected:
@@ -815,7 +1244,15 @@ class MouseForwarderBackend:
             
             # --- 采集卡控制 ---
             elif msg_type == 'capture_start':
-                camera_index = data.get('camera_index', 0)
+                camera_index = data.get('camera_index')
+                # 无效索引 (None/NaN/负数) 时自动检测采集卡, 避免误开摄像头
+                if camera_index is None or not isinstance(camera_index, int) or camera_index < 0:
+                    try:
+                        from capture_card import CaptureCard
+                        camera_index = await asyncio.to_thread(CaptureCard.find_capture_card)
+                        logger.info(f"Invalid camera_index, auto-detected capture card at index {camera_index}")
+                    except Exception:
+                        camera_index = 0
                 await self._start_capture(camera_index)
             
             elif msg_type == 'capture_stop':
@@ -836,9 +1273,11 @@ class MouseForwarderBackend:
 
             # --- 采集格式切换 ---
             elif msg_type == 'set_capture_format':
-                fmt = data.get('format', 'mjpeg')
+                fmt = data.get('format', 'nv12')
                 if self.capture_card:
                     self.capture_card.set_format(fmt)
+                    # 持久化格式, 重启后保持
+                    self.config.set('video', 'capture_format', fmt)
                     # 如果采集正在运行, 需要重启生效
                     if self._capture_active:
                         await self._send({
@@ -860,6 +1299,24 @@ class MouseForwarderBackend:
                         'format': fmt,
                         'error': '采集卡未初始化'
                     })
+
+            # --- 推理中心裁剪尺寸 ---
+            elif msg_type == 'set_center_crop':
+                val = data.get('size')
+                try:
+                    val = int(val)
+                except (TypeError, ValueError):
+                    val = 0
+                # 0=默认 (模型输入尺寸), 256-1080 可调 (步进 4 由前端保证)
+                if val != 0 and not (256 <= val <= 1080):
+                    await self._send({'type': 'center_crop_status', 'size': self.detector.center_crop_size if self.detector else 0,
+                                      'error': '裁剪尺寸需在 256-1080 之间'})
+                else:
+                    if self.detector:
+                        self.detector.center_crop_size = val
+                    self.config.set('video', 'center_crop', val)
+                    await self._send({'type': 'center_crop_status', 'size': val})
+                    logger.info(f"Center crop size set to {val}")
 
             # --- 模型管理 ---
             elif msg_type == 'list_models':
@@ -933,11 +1390,17 @@ class MouseForwarderBackend:
                     self.model_path = model_path
                     # 保存最后加载的模型路径
                     self.config.set('model', 'last_path', model_path)
+                    # 记录模型信息 (锁定面板显示用)
+                    self._overlay_data['model'].update(
+                        loaded=True, name=os.path.basename(model_path))
                     logger.info(f"Model loaded: {model_path}")
 
                     # 如果采集卡正在运行, 重新启动检测管道
                     if self._capture_active:
                         self._pipeline_task = asyncio.create_task(self._detection_loop())
+                        # 采集已运行 + 模型就绪 → 自动进入锁定模式
+                        if self._auto_lock and not self._lock_mode:
+                            asyncio.create_task(self._delayed_lock(2.0))
 
                     await self._send({
                         'type': 'model_status',
@@ -985,6 +1448,9 @@ class MouseForwarderBackend:
             
             elif msg_type == 'trajectory_config':
                 config = self.trajectory.config
+                # 全局固定参数 (抖动/预测帧数/积分/速度前馈) 禁止调节
+                for k in self._fixed_params:
+                    data.pop(k, None)
                 if 'smooth_factor' in data:
                     config.smooth_factor = float(data['smooth_factor'])
                 if 'max_step_px' in data:
@@ -1006,6 +1472,26 @@ class MouseForwarderBackend:
                     config.prediction_ticks = int(data['prediction_ticks'])
                 if 'fov_radius' in data:
                     config.fov_radius = int(data['fov_radius'])
+                if 'fov_dynamic_gain' in data:
+                    config.fov_dynamic_gain = max(0.0, min(0.5, float(data['fov_dynamic_gain'])))
+                if 'sniper_fov_multiplier' in data:
+                    config.sniper_fov_multiplier = max(1.0, min(5.0, float(data['sniper_fov_multiplier'])))
+                if 'sniper_trigger_multiplier' in data:
+                    config.sniper_trigger_multiplier = max(1.0, min(5.0, float(data['sniper_trigger_multiplier'])))
+                if 'sniper_ai_scale' in data:
+                    config.sniper_ai_scale = max(1.0, min(5.0, float(data['sniper_ai_scale'])))
+                if 'sniper_deadzone' in data:
+                    config.sniper_deadzone = max(0.0, min(200.0, float(data['sniper_deadzone'])))
+                if 'sniper_hysteresis' in data:
+                    config.sniper_hysteresis = max(0.0, min(200.0, float(data['sniper_hysteresis'])))
+                if 'sniper_scope_time' in data:
+                    config.sniper_scope_time = max(0.0, min(2.0, float(data['sniper_scope_time'])))
+                if 'sniper_confirm_frames' in data:
+                    config.sniper_confirm_frames = max(0, min(100, int(data['sniper_confirm_frames'])))
+                if 'overshoot_pause_frames' in data:
+                    config.overshoot_pause_frames = max(0, min(100, int(data['overshoot_pause_frames'])))
+                if 'ai_scale' in data:
+                    config.ai_scale = max(0.1, min(2.0, float(data['ai_scale'])))
                 if 'trigger_enabled' in data:
                     self._trigger_enabled = bool(data['trigger_enabled'])
                 if 'trigger_threshold' in data:
@@ -1039,18 +1525,25 @@ class MouseForwarderBackend:
                 self.config.set('trajectory', 'min_confidence', config.min_confidence)
                 self.config.set('trajectory', 'target_offset_x', config.target_offset_x)
                 self.config.set('trajectory', 'target_offset_y', config.target_offset_y)
-                self.config.set('trajectory', 'jitter_amount', config.jitter_amount)
                 self.config.set('trajectory', 'target_priority', config.target_priority)
-                self.config.set('trajectory', 'prediction_ticks', config.prediction_ticks)
+                # 全局固定参数 (抖动/预测帧数) 恒为 0, 不持久化
                 self.config.set('trajectory', 'fov_radius', config.fov_radius)
+                self.config.set('trajectory', 'fov_dynamic_gain', config.fov_dynamic_gain)
+                self.config.set('trajectory', 'sniper_fov_multiplier', config.sniper_fov_multiplier)
+                self.config.set('trajectory', 'sniper_trigger_multiplier', config.sniper_trigger_multiplier)
+                self.config.set('trajectory', 'sniper_ai_scale', config.sniper_ai_scale)
+                self.config.set('trajectory', 'sniper_deadzone', config.sniper_deadzone)
+                self.config.set('trajectory', 'sniper_hysteresis', config.sniper_hysteresis)
+                self.config.set('trajectory', 'sniper_scope_time', config.sniper_scope_time)
+                self.config.set('trajectory', 'sniper_confirm_frames', config.sniper_confirm_frames)
+                self.config.set('trajectory', 'overshoot_pause_frames', config.overshoot_pause_frames)
                 self.config.set('trajectory', 'trigger_enabled', self._trigger_enabled)
                 self.config.set('trajectory', 'trigger_threshold', self._trigger_threshold)
                 self.config.set('trajectory', 'invert_ai_x', config.invert_ai_x)
                 self.config.set('trajectory', 'invert_ai_y', config.invert_ai_y)
                 self.config.set('trajectory', 'kp', config.kp)
-                self.config.set('trajectory', 'ki', config.ki)
+                # 全局固定参数 (积分/速度前馈) 恒为 0, 不持久化
                 self.config.set('trajectory', 'kd', config.kd)
-                self.config.set('trajectory', 'velocity_ff', config.velocity_ff)
                 self.config.set('trajectory', 'integral_limit', config.integral_limit)
                 self.config.set('trajectory', 'max_steps_per_frame', config.max_steps_per_frame)
                 self.config.set('trajectory', 'settle_deadzone', config.settle_deadzone)
@@ -1068,6 +1561,16 @@ class MouseForwarderBackend:
                         'target_priority': config.target_priority,
                         'prediction_ticks': config.prediction_ticks,
                         'fov_radius': config.fov_radius,
+                        'fov_dynamic_gain': config.fov_dynamic_gain,
+                        'sniper_fov_multiplier': config.sniper_fov_multiplier,
+                        'sniper_trigger_multiplier': config.sniper_trigger_multiplier,
+                        'sniper_ai_scale': config.sniper_ai_scale,
+                        'sniper_deadzone': config.sniper_deadzone,
+                        'sniper_hysteresis': config.sniper_hysteresis,
+                        'sniper_scope_time': config.sniper_scope_time,
+                        'sniper_confirm_frames': config.sniper_confirm_frames,
+                        'overshoot_pause_frames': config.overshoot_pause_frames,
+                        'ai_scale': config.ai_scale,
                         'trigger_enabled': self._trigger_enabled,
                         'trigger_threshold': self._trigger_threshold,
                         'invert_ai_x': config.invert_ai_x,
@@ -1144,6 +1647,64 @@ class MouseForwarderBackend:
             elif msg_type == 'lock_mode_disable':
                 await self._lock_mode_off()
 
+            # --- 参数方案 (5 套预设) ---
+            elif msg_type == 'preset_list':
+                presets = []
+                for i in range(1, 6):
+                    p = self.config.get('presets', str(i), default={}) or {}
+                    presets.append({
+                        'index': i,
+                        'name': p.get('name', '') or '',
+                        'saved': bool(p.get('params')),
+                    })
+                await self._send({
+                    'type': 'preset_list',
+                    'presets': presets,
+                    'current': int(self.config.get('presets', 'current', default=1)),
+                })
+
+            elif msg_type == 'preset_save':
+                idx = int(data.get('index', 1))
+                if not 1 <= idx <= 5:
+                    idx = 1
+                name = self.config.get('presets', str(idx), 'name', default='') or ''
+                self.config.set('presets', str(idx), {
+                    'name': name,
+                    'params': self._preset_collect(),
+                })
+                self.config.set('presets', 'current', idx)
+                await self._send({
+                    'type': 'preset_saved',
+                    'index': idx,
+                    'name': name,
+                })
+                logger.info(f"Preset {idx} saved (name='{name}')")
+
+            elif msg_type == 'preset_apply':
+                idx = int(data.get('index', 1))
+                if not 1 <= idx <= 5:
+                    idx = 1
+                preset = self.config.get('presets', str(idx), default={}) or {}
+                params = preset.get('params') or {}
+                if not params:
+                    await self._send({
+                        'type': 'preset_applied',
+                        'index': idx,
+                        'name': preset.get('name', '') or '',
+                        'error': '该方案未保存任何参数',
+                    })
+                    return
+                self._preset_apply(params)
+                self.config.set('presets', 'current', idx)
+                self._persist_trajectory()
+                await self._send_state()
+                await self._send({
+                    'type': 'preset_applied',
+                    'index': idx,
+                    'name': preset.get('name', '') or '',
+                })
+                logger.info(f"Preset {idx} applied")
+
             # --- 屏幕尺寸 ---
             elif msg_type == 'set_screen_size':
                 w = data.get('width', self._screen_w)
@@ -1172,27 +1733,77 @@ class MouseForwarderBackend:
             return
 
         # 叠加扳机状态 (扳机按下时, 无论物理鼠标状态, 强制左键)
+        # pynput 侧键位 (bit3=后退, bit4=前进) 即 HID 标准位, 直接透传
         btns = event.buttons
         if self._trigger_armed:
             btns |= 1
 
-        # 放入队列, 由转发线程写入串口 (不阻塞 pynput 回调)
-        packet = encode_packet(btns, event.dx, event.dy, event.wheel)
-        try:
-            self._mouse_queue.put_nowait(packet)
-            self.stats['packets_sent'] += 1
-            self.stats['bytes_sent'] += len(packet)
-        except queue.Full:
-            pass
+        # 物理鼠标灵敏度放大 (AI 自瞄步不受影响)
+        scale = getattr(self, '_mouse_scale', 1)
+        dx = event.dx * scale
+        dy = event.dy * scale
+        wheel = event.wheel
 
-        # 异步通知前端 (不阻塞串口发送)
+        if dx == 0 and dy == 0:
+            # 纯按钮/滚轮事件: 位移为 0 也必须发送 (保持目标 PC 按钮状态)
+            packet = encode_packet(btns, 0, 0, wheel)
+            try:
+                self._mouse_queue.put_nowait(packet)
+                self.stats['packets_sent'] += 1
+                self.stats['bytes_sent'] += len(packet)
+            except queue.Full:
+                pass
+        else:
+            # 有位移: 放大后可能超过 int8 范围 (-128~127), 拆分为多步
+            for sx, sy in self._split_move(dx, dy, 120):
+                packet = encode_packet(btns, sx, sy, 0)
+                try:
+                    self._mouse_queue.put_nowait(packet)
+                    self.stats['packets_sent'] += 1
+                    self.stats['bytes_sent'] += len(packet)
+                except queue.Full:
+                    pass
 
-        # 异步通知前端 (不阻塞串口发送)
+        # 异步通知前端 (不阻塞串口发送; 限频合并, 避免高频鼠标事件淹没事件循环)
         if self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._notify_mouse_event(event),
-                self._loop
-            )
+            self._mouse_notify_event = event
+            if not getattr(self, '_mouse_notify_busy', False):
+                self._mouse_notify_busy = True
+                asyncio.run_coroutine_threadsafe(self._mouse_notify_loop(), self._loop)
+
+    def _on_raw_mouse_event(self, e: dict):
+        """Raw Input 回调 (dict) → MouseEvent → 复用转发链
+
+        混合模式: 移动来自 raw input (FPS 光标锁定也有效),
+        按钮状态来自 pynput (raw 按钮解析不可靠)。
+        回调只做入队, 不阻塞 raw input 消息循环。
+        """
+        # 按钮状态从 pynput 读取 (AI 轨迹 + 转发共用)
+        btns = getattr(self.mouse, '_buttons_state', 0)
+        event = MouseEvent(
+            buttons=btns,
+            dx=e.get('dx', 0),
+            dy=e.get('dy', 0),
+            wheel=e.get('wheel', 0),
+            left=bool(btns & 1),
+            right=bool(btns & 2),
+            middle=bool(btns & 4),
+            back=bool(btns & 8),
+            forward=bool(btns & 16),
+        )
+        self._on_mouse_event(event)
+
+    @staticmethod
+    def _split_move(dx: int, dy: int, max_step: int = 120):
+        """把位移拆分为 int8 范围内的多步 (保持方向)"""
+        steps = []
+        while dx != 0 or dy != 0:
+            sx = max(-max_step, min(max_step, dx))
+            sy = max(-max_step, min(max_step, dy))
+            steps.append((sx, sy))
+            dx -= sx
+            dy -= sy
+        return steps
 
     def _mouse_forward_loop(self):
         """专用鼠标转发线程: 从队列读数据, 写串口, 不阻塞 pynput"""
@@ -1226,10 +1837,33 @@ class MouseForwarderBackend:
                 })
             except Exception:
                 pass
+
+    async def _mouse_notify_loop(self):
+        """鼠标事件 WS 通知限频循环: 最多 ~125Hz, 只发最新事件
+
+        物理鼠标移动时 raw input 可达上千 Hz 回调, 若每个事件都发 WS
+        消息会淹没事件循环, 拖慢检测管线。常驻循环每 8ms 取最新事件发送,
+        静止时仅空转 sleep (几乎零开销)。
+        """
+        try:
+            while True:
+                ev = self._mouse_notify_event
+                if ev is not None:
+                    self._mouse_notify_event = None
+                    await self._notify_mouse_event(ev)
+                await asyncio.sleep(0.008)  # ~125Hz
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Mouse notify loop error: {e}")
+        finally:
+            self._mouse_notify_busy = False
     
     def _on_serial_connection(self, connected: bool, port: Optional[str]):
         """串口连接状态变化回调"""
         logger.info(f"Serial connection changed: connected={connected}, port={port}")
+        # 记录串口状态 (锁定面板显示用)
+        self._overlay_data['serial'].update(connected=connected, port=port)
         
         if self._ws_client:
             asyncio.run_coroutine_threadsafe(
@@ -1241,6 +1875,17 @@ class MouseForwarderBackend:
                 self._loop
             )
     
+    async def _send_detection_frame_task(self, detections: List[Detection],
+                                         ai_steps: List[Tuple[int, int]],
+                                         frame: Optional[np.ndarray] = None):
+        """异步发送检测帧 (后台任务, 不阻塞检测循环)"""
+        try:
+            await self._send_detection_frame(detections, ai_steps, frame)
+        except Exception as e:
+            logger.error(f"Frame send task error: {e}")
+        finally:
+            self._frame_send_busy = False
+
     async def _send_detection_frame(self, detections: List[Detection],
                                     ai_steps: List[Tuple[int, int]],
                                     frame: Optional[np.ndarray] = None):
@@ -1287,42 +1932,48 @@ class MouseForwarderBackend:
                 # 在后台线程中执行绘图和编码
                 inference_ms = self.detector.avg_inference_time_ms if self.detector else 0
 
-                # 先缩小到 1080p 再编码, 减少传输延迟
+                # 先缩小到 1280 内再编码, 减小 payload 降低传输/事件循环阻塞
                 import cv2
                 h, w = frame.shape[:2]
-                scale = 1.0
-                if w > 1920:
-                    scale = 1920 / w
-                    new_w, new_h = int(w * scale), int(h * scale)
+                # 显示缩放: 超过 1280 缩到 1280 (裁剪帧 640 不放大)
+                small_frame = frame
+                if w > 1280:
+                    display_scale = 1280 / w
+                    new_w, new_h = int(w * display_scale), int(h * display_scale)
                     small_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-                    # 检测框坐标也要按比例缩放
-                    scaled_detections = []
-                    for d in detections:
-                        scaled_detections.append(Detection(
-                            x=d.x * scale, y=d.y * scale,
-                            w=d.w * scale, h=d.h * scale,
-                            confidence=d.confidence, class_id=d.class_id,
-                            cx=d.cx * scale, cy=d.cy * scale,
-                        ))
-                else:
-                    small_frame = frame
-                    scaled_detections = detections
-                    scale = 1.0
+
+                # 检测框为全屏系 -> 先减去裁剪 offset 回到裁剪帧系, 再缩放到显示帧系
+                # (裁剪帧 640: offset=(640,220) 后 scale=1; 全屏帧: offset=0, scale=1280/1920)
+                crop_x = self.capture_card.crop_offset_x
+                crop_y = self.capture_card.crop_offset_y
+                scale = small_frame.shape[1] / frame.shape[1]
+                scaled_detections = []
+                for d in detections:
+                    scaled_detections.append(Detection(
+                        x=(d.x - crop_x) * scale, y=(d.y - crop_y) * scale,
+                        w=d.w * scale, h=d.h * scale,
+                        confidence=d.confidence, class_id=d.class_id,
+                        cx=(d.cx - crop_x) * scale, cy=(d.cy - crop_y) * scale,
+                    ))
 
                 # 缩放瞄准点坐标
                 sel = self.trajectory.selected_target
-                scaled_target_cx = sel.cx * scale if sel else None
-                scaled_target_cy = sel.cy * scale if sel else None
-                scaled_aim_x = self.trajectory.aim_x * scale
-                scaled_aim_y = self.trajectory.aim_y * scale
+                scaled_target_cx = (sel.cx - crop_x) * scale if sel else None
+                scaled_target_cy = (sel.cy - crop_y) * scale if sel else None
+                scaled_aim_x = (self.trajectory.aim_x - crop_x) * scale
+                scaled_aim_y = (self.trajectory.aim_y - crop_y) * scale
 
                 annotated = await asyncio.to_thread(
                     draw_detections_on_frame, small_frame.copy(), scaled_detections, self._pipeline_fps, inference_ms,
                     scaled_target_cx, scaled_target_cy, scaled_aim_x, scaled_aim_y,
                     self.trajectory.is_settled
                 )
+                # 同步推理裁剪尺寸到绘制函数: 换算到显示帧系 (small_frame 可能已缩放)
+                if self.detector:
+                    disp_scale = small_frame.shape[1] / frame.shape[1]
+                    draw_detections_on_frame.crop_size = int((self.detector.center_crop_size or 256) * disp_scale)
                 # 降低 JPEG 质量到 50 以加快编码速度
-                jpeg_bytes = await asyncio.to_thread(encode_frame_jpeg, annotated, 50)
+                jpeg_bytes = await asyncio.to_thread(encode_frame_jpeg, annotated, 45)
                 # 将 JPEG 字节用 base64 编码发送
                 import base64
                 data['frame_jpeg'] = base64.b64encode(jpeg_bytes).decode('ascii')
@@ -1366,6 +2017,16 @@ class MouseForwarderBackend:
                 'target_priority': c.target_priority,
                 'prediction_ticks': c.prediction_ticks,
                 'fov_radius': c.fov_radius,
+                'fov_dynamic_gain': c.fov_dynamic_gain,
+                'sniper_fov_multiplier': c.sniper_fov_multiplier,
+                'sniper_trigger_multiplier': c.sniper_trigger_multiplier,
+                'sniper_ai_scale': c.sniper_ai_scale,
+                'sniper_deadzone': c.sniper_deadzone,
+                'sniper_hysteresis': c.sniper_hysteresis,
+                'sniper_scope_time': c.sniper_scope_time,
+                'sniper_confirm_frames': c.sniper_confirm_frames,
+                'overshoot_pause_frames': c.overshoot_pause_frames,
+                'ai_scale': c.ai_scale,
                 'trigger_enabled': self._trigger_enabled,
                 'trigger_threshold': self._trigger_threshold,
                 'invert_ai_x': c.invert_ai_x,

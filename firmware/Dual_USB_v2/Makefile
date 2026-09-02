@@ -22,19 +22,25 @@ OBJ_DIR  = obj
 SRCS = \
 	main.c \
 	ch32v30x_it.c \
-	ch32v30x_usbfs_device.c \
+	USB_Device/ch32v30x_usbfs_device.c \
+	USB_Device/usb_desc.c \
 	ch32v30x_usbhs_device.c \
 	system_ch32v30x.c \
-	usbd_composite_km.c \
-	User/syscalls.c
+	usbd_compostie_km.c \
+	usbhs_desc.c \
+	debug.c \
+	UART/UART.c \
+	User/syscalls.c \
+	$(wildcard Peripheral/*.c)
 
-# Object files
-OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
+# Object files (startup.S 单独处理)
+OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o) $(OBJ_DIR)/startup.o
 
 # Include paths
 INCLUDES = \
 	-I. \
 	-I./USB_Device \
+	-I./Peripheral \
 	-I./UART \
 	-I./User
 
@@ -43,7 +49,7 @@ LDSCRIPT = $(LD_DIR)/link.ld
 
 # Compiler flags
 CFLAGS = \
-	-march=rv32imac \
+	-march=rv32imac_zicsr_zifencei \
 	-mabi=ilp32 \
 	-msmall-data-limit=8 \
 	-mno-save-restore \
@@ -58,10 +64,11 @@ CFLAGS = \
 
 # Linker flags
 LDFLAGS = \
-	-march=rv32imac \
+	-march=rv32imac_zicsr_zifencei \
 	-mabi=ilp32 \
 	-msmall-data-limit=8 \
 	-mno-save-restore \
+	-nostartfiles \
 	-Os \
 	-ffunction-sections \
 	-fdata-sections \
@@ -73,6 +80,10 @@ LDFLAGS = \
 all: $(OBJ_DIR)/firmware.hex
 
 $(OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/startup.o: startup.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

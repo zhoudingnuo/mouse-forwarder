@@ -676,9 +676,9 @@ def draw_detections_on_frame(frame: np.ndarray, detections: list, fps: float = 0
         # 圆圈
         cv2.circle(frame, (ax, ay), crosshair_size, crosshair_color, 1)
 
-    # 绘制推理区域 (中心 256×256 裁剪框, 绿色边框)
+    # 绘制推理区域 (中心裁剪框, 绿色边框) — 尺寸可调, 与检测器 center_crop_size 同步
     fh, fw = frame.shape[:2]
-    s = 256
+    s = int(getattr(draw_detections_on_frame, 'crop_size', 256) or 256)
     if fw >= s and fh >= s:
         rx1 = fw // 2 - s // 2
         ry1 = fh // 2 - s // 2

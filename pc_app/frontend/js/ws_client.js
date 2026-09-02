@@ -158,7 +158,7 @@ class WSClient {
             try {
                 cb(data);
             } catch (e) {
-                console.error(`WS handler error (${event}):`, e);
+                console.error(`WS handler error (${event}):`, e && e.stack || String(e));
             }
         }
     }

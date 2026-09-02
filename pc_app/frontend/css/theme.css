@@ -1148,3 +1148,14 @@ select.custom-select-hidden {
   transform: translateX(18px);
   background: #fff;
 }
+
+/* 隐藏卡片 (串口设置/固件烧录/统计信息/摄像头) */
+.hidden-card {
+  display: none !important;
+}
+
+/* 全局固定参数 (抖动/预测帧数/Ki/速度前馈) 禁用样式 */
+input[type="range"]:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

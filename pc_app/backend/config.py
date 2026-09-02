@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
         'target_priority': -1,
         'prediction_ticks': 3,
         'fov_radius': 300,
+        'ai_scale': 1.0,
         'trigger_enabled': False,
         'trigger_threshold': 5,
         'invert_ai_x': False,
@@ -42,12 +43,27 @@ DEFAULT_CONFIG = {
         'capture_height': 1080,
         'capture_fps': 240,
     },
+    'mouse': {
+        'source': 'raw',   # 鼠标源: 'raw' = raw input (FPS 兼容), 'pynput' = 光标模式
+        # 注意: 物理鼠标倍率 (scale) 为废案, 已移除, 不再生效
+    },
     'screen': {
         'target_w': 2560,
         'target_h': 1440,
     },
     'model': {
         'last_path': '',
+    },
+    'lock': {
+        'auto_lock': True,  # 采集卡+模型加载完成后自动进入锁定模式
+    },
+    'presets': {
+        'current': 1,       # 当前选中的方案
+        '1': {'name': '无畏契约', 'params': {}},
+        '2': {'name': '三角洲行动', 'params': {}},
+        '3': {'name': '', 'params': {}},
+        '4': {'name': '', 'params': {}},
+        '5': {'name': '', 'params': {}},
     },
 }
 

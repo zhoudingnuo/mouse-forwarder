@@ -12,6 +12,21 @@ let mainWindow = null;
 let tray = null;
 let actualPort = 8765;  // 会被 READY 消息更新
 
+// 单实例锁: 防止重复启动导致两个后端同时抢采集卡 (DSHOW 崩溃 0xC0000005)
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+    console.log('Mouse Forwarder already running, exiting this instance');
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        // 已有实例运行时, 再次启动 -> 聚焦已有窗口
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+
 /**
  * 启动 Python 后端
  */
@@ -34,7 +49,8 @@ function startBackend() {
             const proc = spawn(pythonExe, [backendScript], {
                 cwd: backendDir,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                windowsHide: false,
+                // 隐藏 Python 后端的控制台窗口 (与无终端启动配合, 不弹黑窗)
+                windowsHide: true,
                 env: { ...process.env, PYTHONUNBUFFERED: '1' },
             });
 
@@ -182,33 +198,35 @@ function createTray() {
 
 app.isQuitting = false;
 
-app.whenReady().then(async () => {
-    createTray();
-    createWindow();
+if (gotLock) {
+    app.whenReady().then(async () => {
+        createTray();
+        createWindow();
 
-    // 启动后端
-    try {
-        const port = await startBackend();
-        actualPort = port;
-        console.log(`Backend started on port ${port}`);
-        if (mainWindow) {
-            mainWindow.webContents.send('backend-ready', { port });
+        // 启动后端
+        try {
+            const port = await startBackend();
+            actualPort = port;
+            console.log(`Backend started on port ${port}`);
+            if (mainWindow) {
+                mainWindow.webContents.send('backend-ready', { port });
+            }
+        } catch (err) {
+            console.error('Backend error:', err.message);
+            if (mainWindow) {
+                mainWindow.webContents.send('backend-error', { message: err.message });
+            }
         }
-    } catch (err) {
-        console.error('Backend error:', err.message);
-        if (mainWindow) {
-            mainWindow.webContents.send('backend-error', { message: err.message });
-        }
-    }
 
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-            createWindow();
-        } else if (mainWindow) {
-            mainWindow.show();
-        }
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+            } else if (mainWindow) {
+                mainWindow.show();
+            }
+        });
     });
-});
+}
 
 app.on('before-quit', () => {
     app.isQuitting = true;

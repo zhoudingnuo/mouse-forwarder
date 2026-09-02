@@ -85,21 +85,12 @@ class MousePanel {
         const sbDotMouse = document.getElementById('sb-dot-mouse');
         const sbDotSerial = document.getElementById('sb-dot-serial');
 
-        if (mouseActive) {
-            sbMouse.innerHTML = '<span class="dot ok"></span>鼠标: 活跃';
-            sbDotMouse.className = 'dot ok';
-        } else {
-            sbMouse.innerHTML = '<span class="dot"></span>鼠标: 等待中';
-            sbDotMouse.className = 'dot';
-        }
-
-        if (serialConnected) {
-            sbSerial.innerHTML = '<span class="dot ok"></span>串口: 已连接';
-            sbDotSerial.className = 'dot ok';
-        } else {
-            sbSerial.innerHTML = '<span class="dot"></span>串口: 未连接';
-            sbDotSerial.className = 'dot';
-        }
+        // 只更新 dot 类和文本节点, 不重建 innerHTML
+        // (重建会销毁嵌套的 dot 元素, 之后 getElementById 返回 null, 导致 onState 中断)
+        if (sbDotMouse) sbDotMouse.className = mouseActive ? 'dot ok' : 'dot';
+        if (sbDotSerial) sbDotSerial.className = serialConnected ? 'dot ok' : 'dot';
+        if (sbMouse && sbMouse.lastChild) sbMouse.lastChild.textContent = mouseActive ? '鼠标: 活跃' : '鼠标: 等待中';
+        if (sbSerial && sbSerial.lastChild) sbSerial.lastChild.textContent = serialConnected ? '串口: 已连接' : '串口: 未连接';
     }
 
     /**

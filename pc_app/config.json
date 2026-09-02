@@ -2,43 +2,112 @@
   "trajectory": {
     "enabled": true,
     "smooth_factor": 0.35,
-    "max_step_px": 6,
-    "min_confidence": 0.65,
+    "max_step_px": 10,
+    "min_confidence": 0.3,
     "target_offset_x": 0,
-    "target_offset_y": -29,
-    "jitter_amount": 0.0,
+    "target_offset_y": -31,
+    "jitter_amount": 0.15,
     "target_priority": -1,
-    "prediction_ticks": 0,
-    "fov_radius": 15,
+    "prediction_ticks": 3,
+    "fov_radius": 9,
+    "ai_scale": 1.0,
     "trigger_enabled": false,
-    "trigger_threshold": 9,
+    "trigger_threshold": 3,
     "invert_ai_x": false,
     "invert_ai_y": false,
-    "kp": 0.38,
-    "ki": 0.0,
-    "kd": 0.11,
+    "kp": 0.35,
+    "ki": 0.02,
+    "kd": 0.0,
     "integral_limit": 100.0,
-    "max_steps_per_frame": 5,
+    "max_steps_per_frame": 20,
     "settle_deadzone": 4.0,
     "unsettle_hysteresis": 4.0,
-    "y_scale": 0.4,
-    "velocity_ff": 0.0,
-    "aim_require_lmb": true
+    "y_scale": 0.2,
+    "fov_dynamic_gain": 0.5,
+    "sniper_fov_multiplier": 5.0,
+    "sniper_scope_time": 0.28,
+    "sniper_confirm_frames": 25,
+    "sniper_trigger_multiplier": 3.0,
+    "sniper_ai_scale": 1.0,
+    "sniper_deadzone": 10.0,
+    "sniper_hysteresis": 10.0,
+    "overshoot_pause_frames": 0
   },
   "video": {
     "show_video": true,
     "capture_width": 1920,
     "capture_height": 1080,
-    "capture_fps": 240
+    "capture_fps": 240,
+    "use_ffmpeg": false,
+    "crop_size": 640,
+    "capture_format": "nv12",
+    "center_crop": 256
+  },
+  "mouse": {
+    "source": "raw"
   },
   "screen": {
     "target_w": 2560,
     "target_h": 1440
   },
   "model": {
-    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\deltaforce.onnx"
+    "last_path": "C:\\Users\\AnlangZ\\ZCodeProject\\mouse-forwarder\\valorant.onnx"
   },
-  "mouse": {
-    "scale": 8
+  "lock": {
+    "auto_lock": true
+  },
+  "presets": {
+    "current": 1,
+    "1": {
+      "name": "无畏契约",
+      "params": {
+        "smooth_factor": 0.35,
+        "max_step_px": 10,
+        "min_confidence": 0.3,
+        "target_offset_x": 0,
+        "target_offset_y": -31,
+        "target_priority": -1,
+        "fov_radius": 9,
+        "fov_dynamic_gain": 0.5,
+        "sniper_fov_multiplier": 5.0,
+        "sniper_trigger_multiplier": 3.0,
+        "sniper_ai_scale": 1.0,
+        "sniper_deadzone": 10.0,
+        "sniper_hysteresis": 10.0,
+        "sniper_scope_time": 0.28,
+        "sniper_confirm_frames": 25,
+        "overshoot_pause_frames": 0,
+        "ai_scale": 1.0,
+        "invert_ai_x": false,
+        "invert_ai_y": false,
+        "kp": 0.35,
+        "kd": 0.0,
+        "integral_limit": 100.0,
+        "max_steps_per_frame": 20,
+        "settle_deadzone": 4.0,
+        "unsettle_hysteresis": 4.0,
+        "y_scale": 0.2,
+        "enabled": true,
+        "trigger_enabled": false,
+        "trigger_threshold": 3,
+        "aim_require_lmb": false
+      }
+    },
+    "2": {
+      "name": "三角洲行动",
+      "params": {}
+    },
+    "3": {
+      "name": "",
+      "params": {}
+    },
+    "4": {
+      "name": "",
+      "params": {}
+    },
+    "5": {
+      "name": "",
+      "params": {}
+    }
   }
 }

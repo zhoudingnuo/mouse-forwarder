@@ -40,6 +40,10 @@ class ObjectDetector:
         self._inference_count = 0
         self._crop_offset = (0, 0)
         self._num_classes = len(self.CLASS_NAMES)
+        # 中心裁剪尺寸 (0 = 默认 INPUT_SIZE, 即裁剪 256×256 不缩放)
+        # >256 时先中心裁剪 N×N 再 resize 到 256×256 喂模型 (视野更大, 目标更小)
+        # 坐标映射会按比例缩回原图
+        self.center_crop_size = 0
 
     @property
     def is_loaded(self) -> bool:
@@ -130,28 +134,40 @@ class ObjectDetector:
         return detections
 
     def _detect_onnx(self, frame: np.ndarray, original_shape: Optional[tuple]) -> List[Detection]:
-        """ONNX 推理: 中心裁剪 256×256 (不 resize)"""
+        """ONNX 推理: 中心裁剪 (可调尺寸) + 缩放 256×256"""
         orig_h, orig_w = original_shape or frame.shape[:2]
         SZ = self.INPUT_SIZE
+        # 裁剪边长: 0=默认 SZ; 否则用配置的 center_crop_size (裁剪后 resize 回 SZ)
+        crop_len = self.center_crop_size if self.center_crop_size > 0 else SZ
 
-        # 中心裁剪 256×256
+        # 中心裁剪 crop_len×crop_len
         cx, cy = orig_w // 2, orig_h // 2
-        half = SZ // 2
+        half = crop_len // 2
         x1 = max(0, cx - half)
         y1 = max(0, cy - half)
-        x2 = min(orig_w, x1 + SZ)
-        y2 = min(orig_h, y1 + SZ)
+        x2 = min(orig_w, x1 + crop_len)
+        y2 = min(orig_h, y1 + crop_len)
         crop = frame[y1:y2, x1:x2]
-        # 补齐边缘 (如果画面边缘不足 256)
+        # 补齐边缘 (如果画面边缘不足)
         ch, cw = crop.shape[:2]
-        if ch != SZ or cw != SZ:
-            crop = cv2.copyMakeBorder(crop, 0, SZ - ch, 0, SZ - cw,
+        if ch != crop_len or cw != crop_len:
+            crop = cv2.copyMakeBorder(crop, 0, crop_len - ch, 0, crop_len - cw,
                                        cv2.BORDER_CONSTANT, value=(0, 0, 0))
         self._crop_offset = (x1, y1)
 
-        # BGR→RGB + /255, 无需 resize
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        input_tensor = np.expand_dims(np.transpose(rgb, (2, 0, 1)), axis=0).astype(np.float32)
+        # 裁剪区域 != 模型输入尺寸时 resize 到 SZ (视野缩放)
+        # resize 缩放因子: 原图像素 / 模型像素
+        self._crop_scale = crop_len / SZ
+        if crop_len != SZ:
+            crop = cv2.resize(crop, (SZ, SZ), interpolation=cv2.INTER_LINEAR)
+
+        # BGR→RGB + 单次 float32 转换 (复用 dst 缓冲, 避免多次分配)
+        # 原实现 cvtColor→astype(float32)→transpose 三次分配; 这里合并为两次
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        # HWC→CHW + /255 单步完成 (np 原地转置后除, 减少一次拷贝)
+        input_tensor = np.transpose(rgb, (2, 0, 1))
+        input_tensor = np.ascontiguousarray(input_tensor, dtype=np.float32) / 255.0
+        input_tensor = input_tensor[np.newaxis, ...]
 
         # 推理
         outputs = self._session.run(['output0'], {'images': input_tensor})
@@ -171,12 +187,15 @@ class ObjectDetector:
         cx, cy, w, h = cx[mask], cy[mask], w[mask], h[mask]
         conf = conf[mask]; cls_ids = cls_ids[mask]
 
-        # 坐标映射: 256 空间 → 原图 (1:1, 无缩放)
+        # 坐标映射: 256 空间 → 原图
+        # 1) 模型输出在 SZ 空间 → 乘 crop_scale 回到裁剪区 (crop_len) 空间
+        # 2) 加裁剪偏移 (x1, y1) → 原图空间
+        scale = self._crop_scale
         off_x, off_y = self._crop_offset
-        cx_img = cx + off_x
-        cy_img = cy + off_y
-        # w, h 在 256 空间 = 像素尺寸 (1:1 mapping)
-        w_img = w; h_img = h
+        cx_img = cx * scale + off_x
+        cy_img = cy * scale + off_y
+        w_img = w * scale
+        h_img = h * scale
 
         x1 = (cx_img - w_img / 2).clip(0, orig_w)
         y1 = (cy_img - h_img / 2).clip(0, orig_h)
@@ -210,11 +229,5 @@ class ObjectDetector:
         ) for i in keep]
 
         detections.sort(key=lambda d: d.confidence, reverse=True)
-
-        if not hasattr(self, '_debug_count'):
-            self._debug_count = 0
-        self._debug_count += 1
-        if self._debug_count % 30 == 0:
-            print(f'[TIMING] infer: {self.avg_inference_time_ms:.1f}ms | dets={len(detections)}')
 
         return detections[:self.MAX_DETECTIONS]

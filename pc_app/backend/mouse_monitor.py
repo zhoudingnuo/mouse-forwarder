@@ -30,13 +30,14 @@ class MouseEvent:
     forward: bool = False  # 侧键前进 (X2)
 
 
-# 按钮位映射
+# 按钮位映射 (pynput 标准: bit0=左, bit1=右, bit2=中, bit3=后退, bit4=前进)
+# 注意: 协议位不同 (bit4=后退, bit5=前进), 转发时在 main.py 转换
 BUTTON_BITS = {
     mouse.Button.left:   1,
     mouse.Button.right:  2,
     mouse.Button.middle: 4,
-    mouse.Button.x1:     8,   # 后退键 (bit3 = Button 4)
-    mouse.Button.x2:     16,  # 前进键 (bit4 = Button 5)
+    mouse.Button.x1:     8,   # 后退键 (pynput bit3)
+    mouse.Button.x2:     16,  # 前进键 (pynput bit4)
 }
 
 
@@ -49,8 +50,10 @@ class MouseMonitor:
     支持动态切换 suppress 模式 (重启监听器)。
     """
     
-    def __init__(self, on_event: Optional[Callable[[MouseEvent], None]] = None):
+    def __init__(self, on_event: Optional[Callable[[MouseEvent], None]] = None,
+                 buttons_only: bool = False):
         self._on_event = on_event
+        self._buttons_only = buttons_only  # True = 只捕获按钮/滚轮 (移动交给 raw input)
         self._listener: Optional[mouse.Listener] = None
         self._running = False
         self._suppressed = False  # 是否阻止鼠标事件传播到本机
@@ -189,6 +192,12 @@ class MouseMonitor:
         if not self._running:
             return
 
+        # buttons_only 模式: 移动交给 raw input, 这里只维护按钮/滚轮
+        if self._buttons_only:
+            self._prev_x = x
+            self._prev_y = y
+            return
+
         # 重置抑制标志 (上次回调可能设置了 suppress_current_event)
         if self._listener and self._listener._suppress:
             self._listener._suppress = False
@@ -278,8 +287,8 @@ class MouseMonitor:
             left=bool(self._buttons_state & 1),
             right=bool(self._buttons_state & 2),
             middle=bool(self._buttons_state & 4),
-            back=bool(self._buttons_state & 16),
-            forward=bool(self._buttons_state & 32),
+            back=bool(self._buttons_state & 8),
+            forward=bool(self._buttons_state & 16),
         )
         self._emit_event(event)
     
@@ -296,8 +305,8 @@ class MouseMonitor:
             left=bool(self._buttons_state & 1),
             right=bool(self._buttons_state & 2),
             middle=bool(self._buttons_state & 4),
-            back=bool(self._buttons_state & 16),
-            forward=bool(self._buttons_state & 32),
+            back=bool(self._buttons_state & 8),
+            forward=bool(self._buttons_state & 16),
         )
         self._emit_event(event)
     

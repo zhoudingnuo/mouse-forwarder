@@ -129,12 +129,83 @@
             });
         }
 
+        // 推理中心裁剪尺寸 (256-1080, 步进 4)
+        const sliderCenterCrop = document.getElementById('slider-center-crop');
+        const lblCenterCrop = document.getElementById('lbl-center-crop');
+        if (sliderCenterCrop) {
+            sliderCenterCrop.addEventListener('input', () => {
+                if (lblCenterCrop) lblCenterCrop.textContent = sliderCenterCrop.value;
+                if (ws && ws.connected) {
+                    ws.send({ type: 'set_center_crop', size: parseInt(sliderCenterCrop.value) });
+                }
+            });
+        }
+
         // FOV 自瞄范围
         const sliderFov = document.getElementById('slider-fov');
         const lblFov = document.getElementById('lbl-fov');
         if (sliderFov) {
             sliderFov.addEventListener('input', () => {
                 if (lblFov) lblFov.textContent = sliderFov.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 动态FOV增量 (随框高正相关)
+        const sliderFovDyn = document.getElementById('slider-fov-dyn');
+        const lblFovDyn = document.getElementById('lbl-fov-dyn');
+        if (sliderFovDyn) {
+            sliderFovDyn.addEventListener('input', () => {
+                if (lblFovDyn) lblFovDyn.textContent = parseFloat(sliderFovDyn.value).toFixed(2);
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 狙击确认帧数 (目标连续检出达到此帧数才允许扳机)
+        const sliderSniperFrames = document.getElementById('slider-sniper-frames');
+        const lblSniperFrames = document.getElementById('lbl-sniper-frames');
+        if (sliderSniperFrames) {
+            sliderSniperFrames.addEventListener('input', () => {
+                if (lblSniperFrames) lblSniperFrames.textContent = sliderSniperFrames.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // 狙击模式参数 (AI倍数/死区/滞回/FOV倍数/扳机倍数)
+        const sniperSliderDefs = [
+            ['slider-sniper-ai', 'lbl-sniper-ai', 2],
+            ['slider-sniper-deadzone', 'lbl-sniper-deadzone', 0],
+            ['slider-sniper-hysteresis', 'lbl-sniper-hysteresis', 0],
+            ['slider-sniper-fov-mul', 'lbl-sniper-fov-mul', 1],
+            ['slider-sniper-trig-mul', 'lbl-sniper-trig-mul', 1],
+        ];
+        for (const [sid, lid, decimals] of sniperSliderDefs) {
+            const el = document.getElementById(sid);
+            const lbl = document.getElementById(lid);
+            if (el) {
+                el.addEventListener('input', () => {
+                    if (lbl) lbl.textContent = decimals === 0 ? el.value : parseFloat(el.value).toFixed(decimals);
+                    sendTrajectoryConfig();
+                });
+            }
+        }
+
+        // X轴过冲暂停帧数
+        const sliderOvershootPause = document.getElementById('slider-overshoot-pause');
+        const lblOvershootPause = document.getElementById('lbl-overshoot-pause');
+        if (sliderOvershootPause) {
+            sliderOvershootPause.addEventListener('input', () => {
+                if (lblOvershootPause) lblOvershootPause.textContent = sliderOvershootPause.value;
+                sendTrajectoryConfig();
+            });
+        }
+
+        // AI 倍数
+        const sliderAiScale = document.getElementById('slider-ai-scale');
+        const lblAiScale = document.getElementById('lbl-ai-scale');
+        if (sliderAiScale) {
+            sliderAiScale.addEventListener('input', () => {
+                if (lblAiScale) lblAiScale.textContent = parseFloat(sliderAiScale.value).toFixed(1);
                 sendTrajectoryConfig();
             });
         }
@@ -291,6 +362,15 @@
         const offsetY = parseInt(el('offset-y')?.value) ?? 0;
         const jitter = parseFloat(el('slider-jitter')?.value) ?? 0.15;
         const fov = parseInt(el('slider-fov')?.value) ?? 300;
+        const fovDyn = parseFloat(el('slider-fov-dyn')?.value) ?? 0.10;
+        const sniperFrames = parseInt(el('slider-sniper-frames')?.value) ?? 10;
+        const sniperAi = parseFloat(el('slider-sniper-ai')?.value) ?? 1.0;
+        const sniperDeadzone = parseInt(el('slider-sniper-deadzone')?.value) ?? 10;
+        const sniperHysteresis = parseInt(el('slider-sniper-hysteresis')?.value) ?? 10;
+        const sniperFovMul = parseFloat(el('slider-sniper-fov-mul')?.value) ?? 2.0;
+        const sniperTrigMul = parseFloat(el('slider-sniper-trig-mul')?.value) ?? 3.0;
+        const overshootPause = parseInt(el('slider-overshoot-pause')?.value) ?? 0;
+        const aiScale = parseFloat(el('slider-ai-scale')?.value) ?? 1.0;
         const priority = parseInt(el('target-priority-select')?.value) ?? -1;
         const prediction = parseInt(el('slider-prediction')?.value) ?? 3;
         const triggerThreshold = parseInt(el('slider-trigger-threshold')?.value) ?? 5;
@@ -306,6 +386,15 @@
             target_priority: priority,
             prediction_ticks: prediction,
             fov_radius: fov,
+            fov_dynamic_gain: fovDyn,
+            sniper_confirm_frames: sniperFrames,
+            sniper_ai_scale: sniperAi,
+            sniper_deadzone: sniperDeadzone,
+            sniper_hysteresis: sniperHysteresis,
+            sniper_fov_multiplier: sniperFovMul,
+            sniper_trigger_multiplier: sniperTrigMul,
+            overshoot_pause_frames: overshootPause,
+            ai_scale: aiScale,
             trigger_enabled: state.triggerEnabled,
             trigger_threshold: triggerThreshold,
             kp: parseFloat(el('slider-kp')?.value) ?? 0.35,
@@ -413,6 +502,53 @@
         bindTabSwitching();
         bindTrajectoryControls();
 
+        // 全局固定参数: 抖动/预测帧数/Ki/速度前馈 禁止调节 (后端同时拒绝修改)
+        const fixedParamIds = ['slider-jitter', 'slider-prediction', 'slider-ki', 'slider-velocityff'];
+        for (const id of fixedParamIds) {
+            const el = document.getElementById(id);
+            if (el) el.disabled = true;
+        }
+
+        // ---- 参数方案 (5 套预设: 下拉 + 保存/应用) ----
+        const presetSelect = document.getElementById('preset-select');
+        const CN_NUM = ['一', '二', '三', '四', '五'];
+
+        function presetLabel(p) {
+            const num = CN_NUM[p.index - 1] || p.index;
+            const name = p.name ? `：${p.name}` : '';
+            return p.saved ? `方案${num}${name}` : `方案${num}（未保存）`;
+        }
+
+        function renderPresetList(data) {
+            if (!presetSelect) return;
+            presetSelect.innerHTML = '';
+            for (const p of data.presets) {
+                const opt = document.createElement('option');
+                opt.value = p.index;
+                opt.textContent = presetLabel(p);
+                presetSelect.appendChild(opt);
+            }
+            if (data.current) presetSelect.value = String(data.current);
+        }
+
+        const btnPresetSave = document.getElementById('btn-preset-save');
+        if (btnPresetSave) {
+            btnPresetSave.addEventListener('click', () => {
+                const idx = parseInt(presetSelect.value) || 1;
+                ws.send({ type: 'preset_save', index: idx });
+                settings.addLog(`正在保存参数到 方案${CN_NUM[idx - 1]}...`, 'info');
+            });
+        }
+
+        const btnPresetApply = document.getElementById('btn-preset-apply');
+        if (btnPresetApply) {
+            btnPresetApply.addEventListener('click', () => {
+                const idx = parseInt(presetSelect.value) || 1;
+                ws.send({ type: 'preset_apply', index: idx });
+                settings.addLog(`正在应用 方案${CN_NUM[idx - 1]}...`, 'info');
+            });
+        }
+
         // ---- 事件监听 ----
 
         ws.on('connected', () => {
@@ -420,6 +556,8 @@
             ws.send({ type: 'list_ports' });
             ws.send({ type: 'get_state' });
             ws.send({ type: 'list_models' });  // 自动刷新模型列表
+            ws.send({ type: 'preset_list' });  // 自动加载参数方案
+            ws.send({ type: 'list_cameras' }); // 自动加载摄像头列表 (默认选中采集卡)
         });
 
         ws.on('disconnected', () => {
@@ -525,6 +663,20 @@
             }
         });
 
+        // 推理裁剪尺寸状态
+        ws.on('center_crop_status', (data) => {
+            const slider = document.getElementById('slider-center-crop');
+            const lbl = document.getElementById('lbl-center-crop');
+            if (data.error) {
+                settings.addLog(`裁剪设置失败: ${data.error}`, 'err');
+                return;
+            }
+            if (data.size !== undefined && slider && lbl) {
+                slider.value = data.size;
+                lbl.textContent = data.size;
+            }
+        });
+
         // 模型列表
         ws.on('model_list', (data) => {
             const select = document.getElementById('model-select');
@@ -626,7 +778,27 @@
         ws.on('lock_mode_status', (data) => {
             state.lockMode = data.enabled;
             updateLockUI(data.enabled);
-            settings.addLog(data.enabled ? '🔒 锁定模式 - 全屏黑幕已激活, 按ESC退出' : '锁定模式已关闭', data.enabled ? 'warn' : 'info');
+            settings.addLog(data.enabled ? '🔒 锁定模式已激活 (全屏状态面板, 按ESC退出)' : '锁定模式已关闭', data.enabled ? 'warn' : 'info');
+        });
+
+        // 参数方案
+        ws.on('preset_list', (data) => {
+            renderPresetList(data);
+        });
+        ws.on('preset_saved', (data) => {
+            const num = CN_NUM[data.index - 1] || data.index;
+            settings.addLog(`💾 参数已保存到 方案${num}${data.name ? '：' + data.name : ''}`, 'ok');
+            ws.send({ type: 'preset_list' });
+        });
+        ws.on('preset_applied', (data) => {
+            const num = CN_NUM[data.index - 1] || data.index;
+            if (data.error) {
+                settings.addLog(`应用失败: ${data.error}`, 'err');
+                return;
+            }
+            settings.addLog(`✅ 已应用 方案${num}${data.name ? '：' + data.name : ''}`, 'ok');
+            if (presetSelect) presetSelect.value = String(data.index);
+            ws.send({ type: 'preset_list' });
         });
 
         // 绑定锁定模式按钮
@@ -736,6 +908,50 @@ function onState(data) {
         if (sliderFov && config.fov_radius !== undefined) {
             sliderFov.value = config.fov_radius;
             if (lblFov) lblFov.textContent = config.fov_radius;
+        }
+        // 动态FOV增量
+        const sliderFovDyn = document.getElementById('slider-fov-dyn');
+        const lblFovDyn = document.getElementById('lbl-fov-dyn');
+        if (sliderFovDyn && config.fov_dynamic_gain !== undefined) {
+            sliderFovDyn.value = config.fov_dynamic_gain;
+            if (lblFovDyn) lblFovDyn.textContent = parseFloat(config.fov_dynamic_gain).toFixed(2);
+        }
+        // 狙击确认帧数
+        const sliderSniperFrames = document.getElementById('slider-sniper-frames');
+        const lblSniperFrames = document.getElementById('lbl-sniper-frames');
+        if (sliderSniperFrames && config.sniper_confirm_frames !== undefined) {
+            sliderSniperFrames.value = config.sniper_confirm_frames;
+            if (lblSniperFrames) lblSniperFrames.textContent = config.sniper_confirm_frames;
+        }
+        // 狙击模式参数
+        const sniperSyncDefs = [
+            ['slider-sniper-ai', 'lbl-sniper-ai', 'sniper_ai_scale', 1],
+            ['slider-sniper-deadzone', 'lbl-sniper-deadzone', 'sniper_deadzone', 0],
+            ['slider-sniper-hysteresis', 'lbl-sniper-hysteresis', 'sniper_hysteresis', 0],
+            ['slider-sniper-fov-mul', 'lbl-sniper-fov-mul', 'sniper_fov_multiplier', 1],
+            ['slider-sniper-trig-mul', 'lbl-sniper-trig-mul', 'sniper_trigger_multiplier', 1],
+        ];
+        for (const [sid, lid, key, decimals] of sniperSyncDefs) {
+            const el = document.getElementById(sid);
+            const lbl = document.getElementById(lid);
+            if (el && config[key] !== undefined) {
+                el.value = config[key];
+                if (lbl) lbl.textContent = decimals === 0 ? config[key] : parseFloat(config[key]).toFixed(decimals);
+            }
+        }
+        // X轴过冲暂停帧数
+        const sliderOvershootPause = document.getElementById('slider-overshoot-pause');
+        const lblOvershootPause = document.getElementById('lbl-overshoot-pause');
+        if (sliderOvershootPause && config.overshoot_pause_frames !== undefined) {
+            sliderOvershootPause.value = config.overshoot_pause_frames;
+            if (lblOvershootPause) lblOvershootPause.textContent = config.overshoot_pause_frames;
+        }
+        // AI 倍数
+        const sliderAiScaleSync = document.getElementById('slider-ai-scale');
+        const lblAiScaleSync = document.getElementById('lbl-ai-scale');
+        if (sliderAiScaleSync && config.ai_scale !== undefined) {
+            sliderAiScaleSync.value = config.ai_scale;
+            if (lblAiScaleSync) lblAiScaleSync.textContent = parseFloat(config.ai_scale).toFixed(1);
         }
         // 偏移
         const offsetX = document.getElementById('offset-x');

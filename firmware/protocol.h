@@ -24,7 +24,7 @@
 #define FLAG_LEFT_BUTTON    (1 << 0)
 #define FLAG_RIGHT_BUTTON   (1 << 1)
 #define FLAG_MIDDLE_BUTTON  (1 << 2)
-#define FLAG_WHEEL_VALID    (1 << 3)
+#define FLAG_WHEEL_VALID    (1 << 6)  /* bit6, 避开 bit3 (HID 后退键位) */
 #define FLAG_BACK_BUTTON    (1 << 4)  /* 侧键后退 (X1) */
 #define FLAG_FORWARD_BUTTON (1 << 5)  /* 侧键前进 (X2) */
 

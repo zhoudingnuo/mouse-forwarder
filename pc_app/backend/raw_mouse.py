@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 WM_INPUT = 0x00FF
 RIM_TYPEMOUSE = 0
 RID_INPUT = 0x10000003
-RIDEV_INPUTSINK = 0x100
+RIDEV_INPUTSINK = 0x100        # 后台窗口也接收输入
+RIDEV_EXINPUTSINK = 0x10       # 接收合成 (SendInput 注入) 事件
 
 RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
 RI_MOUSE_LEFT_BUTTON_UP = 0x0002
@@ -21,6 +22,10 @@ RI_MOUSE_RIGHT_BUTTON_DOWN = 0x0004
 RI_MOUSE_RIGHT_BUTTON_UP = 0x0008
 RI_MOUSE_MIDDLE_BUTTON_DOWN = 0x0010
 RI_MOUSE_MIDDLE_BUTTON_UP = 0x0020
+RI_MOUSE_BUTTON_4_DOWN = 0x0040   # 侧键 X1 (后退)
+RI_MOUSE_BUTTON_4_UP = 0x0080
+RI_MOUSE_BUTTON_5_DOWN = 0x0100   # 侧键 X2 (前进)
+RI_MOUSE_BUTTON_5_UP = 0x0200
 RI_MOUSE_WHEEL = 0x0400
 
 
@@ -99,6 +104,7 @@ class RawMouseMonitor:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
 
+        # 所有 Win32 调用必须设置 argtypes, 否则 64 位句柄会被截断为 32 位导致溢出
         user32.GetRawInputData.restype = wintypes.UINT
         user32.GetRawInputData.argtypes = [
             wintypes.LPARAM, wintypes.UINT, ctypes.c_void_p,
@@ -108,6 +114,30 @@ class RawMouseMonitor:
             wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
         ]
         user32.DefWindowProcW.restype = wintypes.LONG
+        user32.RegisterClassW.argtypes = [ctypes.c_void_p]
+        user32.RegisterClassW.restype = wintypes.ATOM
+        user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+            wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int,
+            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+        ]
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.RegisterRawInputDevices.argtypes = [
+            ctypes.c_void_p, wintypes.UINT, wintypes.UINT
+        ]
+        user32.RegisterRawInputDevices.restype = wintypes.BOOL
+        user32.GetMessageW.argtypes = [
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+            wintypes.UINT, wintypes.UINT
+        ]
+        user32.GetMessageW.restype = wintypes.BOOL
+        user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        user32.DestroyWindow.argtypes = [wintypes.HWND]
+        user32.PostQuitMessage.argtypes = [ctypes.c_int]
+        user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+        user32.UnregisterClassW.restype = wintypes.BOOL
 
         WNDPROC = ctypes.WINFUNCTYPE(
             wintypes.LONG, wintypes.HWND, wintypes.UINT,
@@ -185,13 +215,17 @@ class RawMouseMonitor:
         mouse = raw.mouse
         btn_flags = mouse.usButtonFlags
 
-        # 按钮状态
+        # 按钮状态 (与协议一致: bit0=左, bit1=右, bit2=中, bit4=后退, bit5=前进)
         if btn_flags & RI_MOUSE_LEFT_BUTTON_DOWN: self._buttons |= 0x01
         if btn_flags & RI_MOUSE_LEFT_BUTTON_UP: self._buttons &= ~0x01
         if btn_flags & RI_MOUSE_RIGHT_BUTTON_DOWN: self._buttons |= 0x02
         if btn_flags & RI_MOUSE_RIGHT_BUTTON_UP: self._buttons &= ~0x02
         if btn_flags & RI_MOUSE_MIDDLE_BUTTON_DOWN: self._buttons |= 0x04
         if btn_flags & RI_MOUSE_MIDDLE_BUTTON_UP: self._buttons &= ~0x04
+        if btn_flags & RI_MOUSE_BUTTON_4_DOWN: self._buttons |= 0x10   # X1 后退 (FLAG_BACK)
+        if btn_flags & RI_MOUSE_BUTTON_4_UP: self._buttons &= ~0x10
+        if btn_flags & RI_MOUSE_BUTTON_5_DOWN: self._buttons |= 0x20   # X2 前进 (FLAG_FORWARD)
+        if btn_flags & RI_MOUSE_BUTTON_5_UP: self._buttons &= ~0x20
 
         dx = mouse.lLastX
         dy = mouse.lLastY

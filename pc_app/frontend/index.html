@@ -51,7 +51,26 @@
 
         <!-- 侧边栏 -->
         <aside id="sidebar">
-            <div class="sidebar-section serial-config">
+            <!-- 参数方案 (5 套预设) -->
+            <div class="sidebar-section preset-section">
+                <h3>参数方案</h3>
+                <div class="form-group">
+                    <select id="preset-select" style="width:100%;">
+                        <option value="1">方案一</option>
+                        <option value="2">方案二</option>
+                        <option value="3">方案三</option>
+                        <option value="4">方案四</option>
+                        <option value="5">方案五</option>
+                    </select>
+                </div>
+                <div class="form-group" style="display:flex;gap:6px;">
+                    <button class="btn btn-sm" id="btn-preset-save" style="flex:1;" title="保存当前参数到所选方案">保存</button>
+                    <button class="btn btn-sm primary" id="btn-preset-apply" style="flex:1;" title="应用所选方案参数">应用</button>
+                </div>
+                <div class="hint-text" id="preset-hint">选择方案 → 保存 / 应用</div>
+            </div>
+
+            <div class="sidebar-section serial-config hidden-card">
                 <h3>串口设置</h3>
                 <div class="form-group">
                     <label for="port-select">端口</label>
@@ -88,11 +107,11 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <div class="hint-text">锁定后鼠标只转发到目标 PC, 按 Esc 退出</div>
+                    <div class="hint-text">锁定后鼠标只转发到目标 PC, 面板显示实时状态, 按 Esc 退出</div>
                 </div>
             </div>
 
-            <div class="sidebar-section">
+            <div class="sidebar-section hidden-card">
                 <h3>固件烧录</h3>
                 <div class="form-group">
                     <label>芯片型号</label>
@@ -114,7 +133,7 @@
                 <div id="flash-status" style="font-size:11px;color:var(--text-muted);margin-top:4px;"></div>
             </div>
 
-            <div class="sidebar-section">
+            <div class="sidebar-section hidden-card">
                 <h3>统计信息</h3>
                 <div class="stats-list">
                     <div class="stat-row">
@@ -162,13 +181,13 @@
                     <button class="btn primary" id="btn-capture-start">启动采集</button>
                     <button class="btn danger" id="btn-capture-stop" disabled>停止</button>
                 </div>
-                <div class="form-group">
+                <div class="form-group hidden-card">
                     <label>摄像头</label>
                     <select id="camera-select">
                         <option value="0">Camera 0</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group hidden-card">
                     <button class="btn btn-sm" id="btn-refresh-cameras">↻ 刷新摄像头</button>
                 </div>
                 <div class="form-group">
@@ -217,8 +236,60 @@
                     <input type="range" id="slider-confidence" min="0.10" max="0.95" step="0.05" value="0.30">
                 </div>
                 <div class="form-group">
+                    <label>推理裁剪 <span id="lbl-center-crop">256</span>px</label>
+                    <input type="range" id="slider-center-crop" min="256" max="1080" step="4" value="256">
+                    <div class="hint-text">模型视野: 中心裁剪 N×N 再缩放进模型 (越大视野越广目标越小)</div>
+                </div>
+                <div class="form-group">
                     <label>自瞄范围 (FOV) <span id="lbl-fov">300</span>px</label>
-                    <input type="range" id="slider-fov" min="10" max="1000" step="1" value="300">
+                    <input type="range" id="slider-fov" min="1" max="150" step="1" value="300">
+                    <div class="hint-text">实际范围 = 基准 FOV + 动态FOV(随框高正相关)</div>
+                </div>
+                <div class="form-group">
+                    <label>动态FOV增量 <span id="lbl-fov-dyn">0.10</span>px/px</label>
+                    <input type="range" id="slider-fov-dyn" min="0" max="0.50" step="0.01" value="0.10">
+                    <div class="hint-text">每 1px 目标框高增加的范围 (框越高范围越大)</div>
+                </div>
+                <div class="form-group">
+                    <label>狙击确认帧数 <span id="lbl-sniper-frames">10</span>帧</label>
+                    <input type="range" id="slider-sniper-frames" min="0" max="100" step="5" value="10">
+                    <div class="hint-text">狙击模式: 目标连续检出达到此帧数才允许扳机 (0=不要求)</div>
+                </div>
+                <h3 style="margin-top:10px;font-size:12px;color:var(--text-muted);">狙击模式参数</h3>
+                <div class="form-group">
+                    <label>狙击AI倍数 <span id="lbl-sniper-ai">1.0</span>x</label>
+                    <input type="range" id="slider-sniper-ai" min="1.0" max="5.0" step="0.1" value="1.0">
+                    <div class="hint-text">狙击模式 AI 输出缩放 (开镜灵敏度低, 独立设置)</div>
+                </div>
+                <div class="form-group">
+                    <label>狙击死区 <span id="lbl-sniper-deadzone">10</span>px</label>
+                    <input type="range" id="slider-sniper-deadzone" min="0" max="200" step="10" value="10">
+                    <div class="hint-text">狙击模式: 目标距中心小于此值停止移动</div>
+                </div>
+                <div class="form-group">
+                    <label>狙击滞回 <span id="lbl-sniper-hysteresis">10</span>px</label>
+                    <input type="range" id="slider-sniper-hysteresis" min="0" max="200" step="10" value="10">
+                    <div class="hint-text">狙击模式: 超出此范围重新开始瞄准</div>
+                </div>
+                <div class="form-group">
+                    <label>狙击FOV倍数 <span id="lbl-sniper-fov-mul">2.0</span>x</label>
+                    <input type="range" id="slider-sniper-fov-mul" min="1.0" max="5.0" step="0.1" value="2.0">
+                    <div class="hint-text">狙击模式自瞄范围倍数</div>
+                </div>
+                <div class="form-group">
+                    <label>狙击扳机倍数 <span id="lbl-sniper-trig-mul">3.0</span>x</label>
+                    <input type="range" id="slider-sniper-trig-mul" min="1.0" max="5.0" step="0.1" value="3.0">
+                    <div class="hint-text">狙击模式扳机范围倍数</div>
+                </div>
+                <div class="form-group">
+                    <label>X轴过冲暂停 <span id="lbl-overshoot-pause">0</span>帧</label>
+                    <input type="range" id="slider-overshoot-pause" min="0" max="100" step="5" value="0">
+                    <div class="hint-text">AI自瞄X轴正负变号(过冲)后, 后续N帧自瞄不生效 (0=关闭)</div>
+                </div>
+                <div class="form-group">
+                    <label>AI 倍数 <span id="lbl-ai-scale">1.0</span>x</label>
+                    <input type="range" id="slider-ai-scale" min="0.1" max="2.0" step="0.1" value="1.0">
+                    <div class="hint-text">PID 输出缩放 (0.1-2.0x), 仅影响自瞄</div>
                 </div>
                 <div class="form-group">
                     <label>目标类别优先级</label>
@@ -240,12 +311,12 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>抖动 <span id="lbl-jitter">0.15</span>px</label>
-                    <input type="range" id="slider-jitter" min="0" max="1.0" step="0.05" value="0.15">
+                    <label>抖动 <span id="lbl-jitter">0.00</span>px</label>
+                    <input type="range" id="slider-jitter" min="0" max="1.0" step="0.05" value="0" disabled>
                 </div>
                 <div class="form-group">
-                    <label>预测帧数 <span id="lbl-prediction">3</span></label>
-                    <input type="range" id="slider-prediction" min="0" max="10" step="1" value="3">
+                    <label>预测帧数 <span id="lbl-prediction">0</span></label>
+                    <input type="range" id="slider-prediction" min="0" max="10" step="1" value="0" disabled>
                 </div>
             </div>
 
@@ -258,8 +329,8 @@
 	                    <input type="range" id="slider-kp" min="0.01" max="1.50" step="0.01" value="0.35">
                 </div>
                 <div class="form-group">
-                    <label>Ki <span id="lbl-ki">0.02</span></label>
-                    <input type="range" id="slider-ki" min="0" max="0.20" step="0.01" value="0.02">
+                    <label>Ki <span id="lbl-ki">0.00</span></label>
+                    <input type="range" id="slider-ki" min="0" max="0.20" step="0.01" value="0" disabled>
                 </div>
                 <div class="form-group">
                     <label>Kd <span id="lbl-kd">0.10</span></label>
@@ -267,7 +338,7 @@
                 </div>
                 <div class="form-group">
                     <label>速度前馈 <span id="lbl-velocityff">0.00</span></label>
-                    <input type="range" id="slider-velocityff" min="0" max="2.00" step="0.01" value="0.00">
+                    <input type="range" id="slider-velocityff" min="0" max="2.00" step="0.01" value="0" disabled>
                     <div class="hint-text">补偿目标移动速度, 跟枪专用 (0=关, 0.5=补偿50%)</div>
                 </div>
                 <div class="form-group">

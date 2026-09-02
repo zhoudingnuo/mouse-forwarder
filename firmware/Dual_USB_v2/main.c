@@ -30,7 +30,7 @@ volatile uint8_t  Rx_Packet_Ready = 0;
 #define FLAG_LEFT    0x01
 #define FLAG_RIGHT   0x02
 #define FLAG_MIDDLE  0x04
-#define FLAG_WHEEL   0x08
+#define FLAG_WHEEL   0x40  /* bit6, 避开 bit3 (HID 后退键位) */
 #define FLAG_BACK    0x10  /* X1 button */
 #define FLAG_FORWARD 0x20  /* X2 button */
 

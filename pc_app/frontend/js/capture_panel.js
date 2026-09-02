@@ -110,10 +110,12 @@ class CapturePanel {
             });
         }
 
-        // 采集格式切换 (MJPEG ↔ YUV422)
+        // 采集格式切换 (MJPEG → YUV422 → NV12)
         if (this.btnFormatToggle) {
             this.btnFormatToggle.addEventListener('click', () => {
-                const newFmt = this._captureFormat === 'mjpeg' ? 'yuv' : 'mjpeg';
+                const order = ['mjpeg', 'yuv', 'nv12'];
+                const cur = order.indexOf(this._captureFormat);
+                const newFmt = order[(cur + 1) % order.length];
                 this._captureFormat = newFmt;
                 this.btnFormatToggle.textContent = `格式: ${newFmt.toUpperCase()}`;
                 this._sendCommand('set_capture_format', { format: newFmt });

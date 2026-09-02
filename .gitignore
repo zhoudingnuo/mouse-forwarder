@@ -13,3 +13,17 @@ tools/riscv-gcc/
 pc_app/electron/node_modules/
 .DS_Store
 Thumbs.db
+
+# 固件编译产物
+firmware/Dual_USB_v2/obj/
+firmware/*/obj/
+*.o
+*.elf
+*.map
+
+# 模型文件
+*.onnx
+
+# 固件产物
+*.elf
+*.hex

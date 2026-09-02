@@ -37,7 +37,16 @@ class TrajectoryConfig:
     jitter_amount: float = 0.10         # 随机抖动幅度 (像素)
     smoothing_samples: int = 8          # 指数移动平均的采样窗口
     max_trail_points: int = 200         # 轨迹点最大保留数
-    fov_radius: int = 300               # 自瞄范围 (像素), 0=禁用范围限制
+    fov_radius: int = 300               # 自瞄基准范围 (像素), 0=禁用范围限制
+    fov_dynamic_gain: float = 0.10      # 动态FOV增益 (px/px): 每 1px 目标框高增加的范围
+    sniper_fov_multiplier: float = 2.0  # 狙击模式 FOV 倍率 (按住右键时自瞄范围 ×倍率)
+    sniper_trigger_multiplier: float = 3.0  # 狙击模式扳机范围倍数 (触发阈值 ×倍率)
+    sniper_ai_scale: float = 1.0        # 狙击模式 AI 倍数 (开镜灵敏度低, 独立缩放)
+    sniper_deadzone: float = 10.0       # 狙击模式死区 (px, 目标距中心小于此值停止移动)
+    sniper_hysteresis: float = 10.0     # 狙击模式滞回 (px, 超出此范围重新开始瞄准)
+    sniper_scope_time: float = 0.28      # 狙击开镜时间 (秒): 按住右键后此时间内禁止触发扳机
+    sniper_confirm_frames: int = 10      # 狙击确认帧数: 目标连续检出达到此帧数才允许扳机 (0=不要求, 0-100 步进5)
+    overshoot_pause_frames: int = 0      # X轴过冲暂停帧数: AI自瞄dx正负变号(过冲)后, 后续N帧自瞄不生效 (0=关闭, 0-100 步进5)
     target_scale_x: float = 1.0        # 缩放 (检测→目标, 默认 1:1)
     target_scale_y: float = 1.0        # 缩放
     invert_ai_x: bool = False          # 反转 AI 轨迹 X 轴
@@ -52,6 +61,7 @@ class TrajectoryConfig:
     settle_deadzone: float = 3.0        # 进入死区的阈值 (像素), 目标在此范围内停止移动 (最小1px)
     unsettle_hysteresis: float = 5.0   # 退出死区的滞回阈值 (像素), 防止抖动 (最小1px)
     y_scale: float = 0.60              # Y 轴幅度缩放 (0.0-1.0), 防抖用
+    ai_scale: float = 1.0              # AI 倍数 (PID 输出缩放, 0.1-2.0), 仅影响自瞄
 
 
 @dataclass
@@ -154,6 +164,8 @@ class TrajectoryCalculator:
         self.aim_x: float = 0
         self.aim_y: float = 0
         self.is_settled: bool = False
+        # 狙击模式 (由 main.py 按鼠标右键状态设置): 自瞄范围乘倍率
+        self.sniper_mode: bool = False
 
         # PID 控制器状态
         self._integral_x: float = 0.0
@@ -180,6 +192,21 @@ class TrajectoryCalculator:
         """设置屏幕中心坐标"""
         self._screen_center_x = cx
         self._screen_center_y = cy
+
+    def dynamic_fov(self, box_h: float) -> float:
+        """动态自瞄范围: 基准FOV + 随框高正相关的动态FOV
+
+        FOV = fov_radius + fov_dynamic_gain × 框高
+        基准FOV (fov_radius) 固定不变; 动态部分随目标框高正比增长
+        狙击模式 (sniper_mode) 下整体 × sniper_fov_multiplier (默认 3 倍)
+        框越高(目标越近) → 允许瞄准偏移越大; 返回 0 表示不限制。
+        """
+        if self.config.fov_radius <= 0 or box_h <= 0:
+            return 0.0
+        fov = self.config.fov_radius + self.config.fov_dynamic_gain * box_h
+        if self.sniper_mode:
+            fov *= self.config.sniper_fov_multiplier
+        return fov
 
     def update_mouse_position(self, x: float, y: float):
         """更新当前鼠标位置 (由鼠标事件回调调用)"""
@@ -247,9 +274,13 @@ class TrajectoryCalculator:
         scaled_ey = error_y * self.config.y_scale
         distance = math.sqrt(error_x ** 2 + scaled_ey ** 2)
 
-# ── 滞回死区 (从配置读取) ──
-        SETTLE_DEADZONE = self.config.settle_deadzone
-        UNSETTLE_HYST = self.config.unsettle_hysteresis
+# ── 滞回死区 (从配置读取; 狙击模式用独立的值) ──
+        if self.sniper_mode:
+            SETTLE_DEADZONE = self.config.sniper_deadzone
+            UNSETTLE_HYST = self.config.sniper_hysteresis
+        else:
+            SETTLE_DEADZONE = self.config.settle_deadzone
+            UNSETTLE_HYST = self.config.unsettle_hysteresis
 
         if self.is_settled:
             # 已对准状态: 用较大的滞回阈值
@@ -319,6 +350,16 @@ class TrajectoryCalculator:
 
         # 5. 分解为微移动序列
         all_steps = self._decompose_movement(output_x, output_y)
+
+        # AI 倍数: 作用在步长上 (转发前缩放, 不干扰步长规划逻辑)
+        ai_scale = self.config.ai_scale
+        if ai_scale != 1.0:
+            all_steps = [
+                (int(sx * ai_scale), int(sy * ai_scale))
+                for sx, sy in all_steps
+            ]
+            # 过滤缩放后为 0 的步
+            all_steps = [(sx, sy) for sx, sy in all_steps if sx != 0 or sy != 0]
 
         # 6. 限制每帧步数, 防止 USB 堆积
         max_steps = self.config.max_steps_per_frame
@@ -494,14 +535,18 @@ class TrajectoryCalculator:
             if filtered:
                 candidates = filtered
 
-        # 按 FOV 范围过滤
+        # 按 FOV 范围过滤 (动态: 每个目标框按自身高度计算允许范围, 框越高范围越大)
         if self.config.fov_radius > 0:
-            fov_sq = self.config.fov_radius ** 2
-            in_fov = [
-                d for d in candidates
-                if (d.cx - self._screen_center_x) ** 2 +
-                   (d.cy - self._screen_center_y) ** 2 <= fov_sq
-            ]
+            in_fov = []
+            for d in candidates:
+                fov_d = self.dynamic_fov(d.h)
+                if fov_d <= 0:
+                    in_fov.append(d)  # 框高无效时放行 (fov_radius>0 才进此分支)
+                    continue
+                dist_sq = (d.cx - self._screen_center_x) ** 2 + \
+                          (d.cy - self._screen_center_y) ** 2
+                if dist_sq <= fov_d * fov_d:
+                    in_fov.append(d)
             if in_fov:
                 candidates = in_fov
             else:
