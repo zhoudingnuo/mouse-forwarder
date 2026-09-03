@@ -1318,26 +1318,34 @@ class MouseForwarderBackend:
 
             # 录制轨迹为右背 (dx>0); 闪光在右(需左转背对) -> 镜像 dx
             mirror = not flash_left  # 闪光在右 -> 左转 -> dx 取负
-            # 每 5 个采样点为一组连续发送, 组间按组时长等待:
-            # 微 sleep (~2ms) 在 Windows 上误差大, 组聚合后误差 <5%
-            GRP = 5
-            for g in range(0, len(t_ms), GRP):
+            # 逐包时间表: 把每采样点拆出的包均匀铺在该点的时间窗内,
+            # 逐包按绝对时刻等待 -> 视角匀速平滑 (分组连发会造成
+            # "一坨包瞬时突入 + 一段静默" 的脉冲, 观感一跳一跳)
+            loop = asyncio.get_running_loop()
+            t_start = loop.time()
+            n = len(t_ms)
+            plan = []  # (t_abs, sx, sy)
+            for i in range(n):
+                dx = (dx_list[i] if not mirror else -dx_list[i]) * mscale
+                dy = dy_list[i] * mscale
+                steps = self._split_move(int(dx), int(dy), 120)
+                if not steps:
+                    continue
+                t_a = t_start + t_ms[i] / 1000.0 / speed
+                t_b = t_start + t_ms[i + 1] / 1000.0 / speed if i + 1 < n else t_a
+                k = len(steps)
+                for j, (sx, sy) in enumerate(steps):
+                    t_abs = t_a + (t_b - t_a) * (j + 1) / k
+                    plan.append((t_abs, sx, sy))
+            for t_abs, sx, sy in plan:
                 if not self.serial.is_connected:
                     break
-                for i in range(g, min(g + GRP, len(t_ms))):
-                    dx = (dx_list[i] if not mirror else -dx_list[i]) * mscale
-                    dy = dy_list[i] * mscale
-                    # 拆分大位移到 int8 范围并发送
-                    for sx, sy in self._split_move(int(dx), int(dy), 120):
-                        packet = encode_packet(0, sx, sy, 0)
-                        await self.serial.send(packet)
-                        self.stats['backflash_events'] = self.stats.get('backflash_events', 0) + 1
-                # 组间等待: 该组实际时长 (整体加速/减速: >1 更快)
-                if g + GRP < len(t_ms):
-                    i_end = min(g + GRP, len(t_ms)) - 1
-                    dt = (t_ms[i_end] - t_ms[g]) / 1000.0 / speed
-                    if dt > 0:
-                        await asyncio.sleep(dt)
+                packet = encode_packet(0, sx, sy, 0)
+                await self.serial.send(packet)
+                self.stats['backflash_events'] = self.stats.get('backflash_events', 0) + 1
+                delay = t_abs - loop.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
             logger.info("Backflash: 回放完成, 恢复自瞄")
         except asyncio.CancelledError:
             pass

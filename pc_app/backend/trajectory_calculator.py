@@ -33,7 +33,7 @@ class TrajectoryConfig:
     target_offset_x: int = 0            # 瞄准偏移 X (目标框宽度的百分比, 如 5=5%)
     target_offset_y: int = 0            # 瞄准偏移 Y (目标框高度的百分比)
     min_confidence: float = 0.30        # 最低置信度阈值
-    target_priority: int = 1           # 目标类别优先级 (1=head, -1=最近, 0=body, 2=teammate, 3=breakable, 4=dodge)
+    target_priority: int = 1           # 目标类别: 0=body, 1=head, 2=teammate, 3=breakable, 4=dodge, -1=最近
     jitter_amount: float = 0.10         # 随机抖动幅度 (像素)
     smoothing_samples: int = 8          # 指数移动平均的采样窗口
     max_trail_points: int = 200         # 轨迹点最大保留数
@@ -511,6 +511,16 @@ class TrajectoryCalculator:
 
     # ============ 内部方法 ============
 
+    @staticmethod
+    def _filter_by_priority(cands: List[Detection], priority: int) -> List[Detection]:
+        """类别过滤 (自瞄锁定/扳机/FOV引导共用同一套):
+          - >=0: 固定类别, 画面无该类则无目标 (不降级锁别的类别)
+          - -1: 全部类别 (最近)
+        """
+        if priority >= 0:
+            return [d for d in cands if d.class_id == priority]
+        return cands
+
     def _fov_pull_steps(self, detections: List[Detection]) -> List[Tuple[int, int]]:
         """FOV 外慢速引导: 目标超出自瞄范围时, 朝最近目标缓慢转向
 
@@ -523,8 +533,7 @@ class TrajectoryCalculator:
             return []
         # 与 _select_target 一致的候选过滤 (置信度 + 类别)
         cands = [d for d in detections if d.confidence >= cfg.min_confidence]
-        if cfg.target_priority >= 0:
-            cands = [d for d in cands if d.class_id == cfg.target_priority]
+        cands = self._filter_by_priority(cands, cfg.target_priority)
         if not cands:
             return []
         best = min(cands, key=lambda d:
@@ -589,10 +598,9 @@ class TrajectoryCalculator:
             self._missed_frames = 0
             return None
 
-        # 按目标类别过滤 (固定类别时: 画面无该类则无目标, 不降级锁别的类别)
-        if self.config.target_priority >= 0:
-            candidates = [d for d in candidates
-                          if d.class_id == self.config.target_priority]
+        # 按目标类别过滤 (0=人形自动: 有 head 锁 head, 无 head 用 body;
+        # 固定类别时: 画面无该类则无目标, 不降级锁别的类别)
+        candidates = self._filter_by_priority(candidates, self.config.target_priority)
 
         # 按 FOV 范围过滤 (动态: 每个目标框按自身高度计算允许范围, 框越高范围越大)
         if self.config.fov_radius > 0:
