@@ -327,6 +327,10 @@
                 </div>
                 <div id="backflash-controls">
                     <div class="form-group">
+                        <label>闪光置信度 <span id="lbl-bf-conf">0.50</span> <span class="hint-text">(检测到闪光的置信阈值, 越高越不易误触)</span></label>
+                        <input type="range" id="slider-bf-conf" min="0.10" max="0.90" step="0.05" value="0.50">
+                    </div>
+                    <div class="form-group">
                         <label>背闪速度 <span id="lbl-bf-speed">1.00</span>x <span class="hint-text">(1=人手原速, &gt;1 反应更快)</span></label>
                         <input type="range" id="slider-bf-speed" min="0.5" max="3.0" step="0.05" value="1.0">
                     </div>

@@ -239,6 +239,17 @@
                 }
             });
         }
+        // 背闪闪光置信度阈值 (独立于自瞄置信度)
+        const sliderBfConf = document.getElementById('slider-bf-conf');
+        if (sliderBfConf) {
+            sliderBfConf.addEventListener('input', () => {
+                const lbl = document.getElementById('lbl-bf-conf');
+                if (lbl) lbl.textContent = parseFloat(sliderBfConf.value).toFixed(2);
+                if (ws && ws.connected) {
+                    ws.send({ type: 'back_flash_config', conf_threshold: parseFloat(sliderBfConf.value) });
+                }
+            });
+        }
         // 背闪速度/幅度倍数 (0.5~3.0)
         function sendBackflashParam(key, val, lblId) {
             const lbl = document.getElementById(lblId);
@@ -962,6 +973,13 @@ function onState(data) {
         const lbl = document.getElementById('lbl-backflash-status');
         const hint = document.getElementById('backflash-hint');
         if (chk && data.enabled !== undefined) chk.checked = data.enabled;
+        // 置信度滑块同步
+        if (data.conf_threshold !== undefined) {
+            const s = document.getElementById('slider-bf-conf');
+            const l = document.getElementById('lbl-bf-conf');
+            if (s) { s.value = Math.min(0.9, Math.max(0.1, data.conf_threshold)); }
+            if (l) l.textContent = Number(s ? s.value : data.conf_threshold).toFixed(2);
+        }
         // 倍数 slider 同步 (后端可能因 clamp 修正过值)
         if (data.playback_speed !== undefined) {
             const s = document.getElementById('slider-bf-speed');
