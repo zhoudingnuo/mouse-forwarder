@@ -161,6 +161,15 @@
             });
         }
 
+        // 左键FOV倍数
+        const sliderLmbFov = document.getElementById('slider-lmb-fov');
+        const lblLmbFov = document.getElementById('lbl-lmb-fov');
+        if (sliderLmbFov) {
+            sliderLmbFov.addEventListener('input', () => {
+                if (lblLmbFov) lblLmbFov.textContent = parseFloat(sliderLmbFov.value).toFixed(1);
+                sendTrajectoryConfig();
+            });
+        }
         // FOV外慢速引导 (开关 + 速度)
         const chkFovPull = document.getElementById('chk-fov-pull');
         if (chkFovPull) {
@@ -176,6 +185,11 @@
         }
 
         // 狙击确认帧数 (目标连续检出达到此帧数才允许扳机)
+        // 狙击修正Y轴开关
+        const chkSniperFixY = document.getElementById('chk-sniper-fix-y');
+        if (chkSniperFixY) {
+            chkSniperFixY.addEventListener('change', sendTrajectoryConfig);
+        }
         const sliderSniperFrames = document.getElementById('slider-sniper-frames');
         const lblSniperFrames = document.getElementById('lbl-sniper-frames');
         if (sliderSniperFrames) {
@@ -442,10 +456,12 @@
         const jitter = parseFloat(el('slider-jitter')?.value) ?? 0.15;
         const fov = parseInt(el('slider-fov')?.value) ?? 300;
         const fovDyn = parseFloat(el('slider-fov-dyn')?.value) ?? 0.10;
+        const lmbFov = parseFloat(el('slider-lmb-fov')?.value) ?? 2.0;
         const fovPullEnabled = !!el('chk-fov-pull')?.checked;
         const fovPullSpeed = parseInt(el('slider-fov-pull-speed')?.value) ?? 8;
         const sniperFrames = parseInt(el('slider-sniper-frames')?.value) ?? 10;
         const sniperAi = parseFloat(el('slider-sniper-ai')?.value) ?? 1.0;
+        const sniperFixY = !!el('chk-sniper-fix-y')?.checked;
         const sniperDeadzone = parseInt(el('slider-sniper-deadzone')?.value) ?? 10;
         const sniperHysteresis = parseInt(el('slider-sniper-hysteresis')?.value) ?? 10;
         const sniperFovMul = parseFloat(el('slider-sniper-fov-mul')?.value) ?? 2.0;
@@ -468,10 +484,12 @@
             prediction_ticks: prediction,
             fov_radius: fov,
             fov_dynamic_gain: fovDyn,
+            lmb_fov_multiplier: lmbFov,
             fov_pull_enabled: fovPullEnabled,
             fov_pull_speed: fovPullSpeed,
             sniper_confirm_frames: sniperFrames,
             sniper_ai_scale: sniperAi,
+            sniper_fix_y: sniperFixY,
             sniper_deadzone: sniperDeadzone,
             sniper_hysteresis: sniperHysteresis,
             sniper_fov_multiplier: sniperFovMul,
@@ -1065,6 +1083,13 @@ function onState(data) {
             sliderFovDyn.value = config.fov_dynamic_gain;
             if (lblFovDyn) lblFovDyn.textContent = parseFloat(config.fov_dynamic_gain).toFixed(2);
         }
+        // 左键FOV倍数
+        const sliderLmbFovS = document.getElementById('slider-lmb-fov');
+        const lblLmbFovS = document.getElementById('lbl-lmb-fov');
+        if (sliderLmbFovS && config.lmb_fov_multiplier !== undefined) {
+            sliderLmbFovS.value = config.lmb_fov_multiplier;
+            if (lblLmbFovS) lblLmbFovS.textContent = parseFloat(config.lmb_fov_multiplier).toFixed(1);
+        }
         // FOV外慢速引导
         const chkFovPull = document.getElementById('chk-fov-pull');
         if (chkFovPull && config.fov_pull_enabled !== undefined) {
@@ -1091,6 +1116,11 @@ function onState(data) {
             ['slider-sniper-fov-mul', 'lbl-sniper-fov-mul', 'sniper_fov_multiplier', 1],
             ['slider-sniper-trig-mul', 'lbl-sniper-trig-mul', 'sniper_trigger_multiplier', 1],
         ];
+        // 狙击修正Y轴
+        const chkFixY = document.getElementById('chk-sniper-fix-y');
+        if (chkFixY && config.sniper_fix_y !== undefined) {
+            chkFixY.checked = !!config.sniper_fix_y;
+        }
         for (const [sid, lid, key, decimals] of sniperSyncDefs) {
             const el = document.getElementById(sid);
             const lbl = document.getElementById(lid);

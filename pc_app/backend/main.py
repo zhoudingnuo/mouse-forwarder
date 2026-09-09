@@ -768,7 +768,8 @@ class MouseForwarderBackend:
         'target_offset_y', 'target_priority', 'fov_radius', 'fov_dynamic_gain',
         'fov_pull_enabled', 'fov_pull_speed',
         'sniper_fov_multiplier', 'sniper_trigger_multiplier', 'sniper_ai_scale',
-        'sniper_deadzone', 'sniper_hysteresis', 'sniper_scope_time',
+        'sniper_deadzone', 'sniper_hysteresis', 'sniper_scope_time', 'sniper_fix_y',
+        'lmb_fov_multiplier',
         'sniper_confirm_frames', 'overshoot_pause_frames',
         'ai_scale', 'invert_ai_x', 'invert_ai_y',
         'kp', 'kd', 'integral_limit',
@@ -873,6 +874,8 @@ class MouseForwarderBackend:
                 
                 # 狙击模式 (按住右键): 自瞄范围 ×倍率 (默认3倍)
                 self.trajectory.sniper_mode = bool(self.mouse._buttons_state & 2)
+                # 左键开火模式 (按住左键): 自瞄范围 × lmb_fov_multiplier (默认2倍)
+                self.trajectory.lmb_mode = bool(self.mouse._buttons_state & 1)
 
                 self.stats['detections'] = len(detections)
                 t_detect = time.perf_counter()
@@ -956,8 +959,10 @@ class MouseForwarderBackend:
 
                 # AI 轨迹独立发送 (步间 1ms 间隔, 在帧空闲时间内发完)
                 # 如果开启了"按住左键才自瞄", 且左键未按下 -> 跳过
+                # 狙击模式 (按住右键开镜) 不受此限制: 开镜始终自瞄
                 lmb_down = bool(self.mouse._buttons_state & 1)
-                if self._aim_require_lmb and not lmb_down:
+                rmb_down = bool(self.mouse._buttons_state & 2)
+                if self._aim_require_lmb and not lmb_down and not rmb_down:
                     ai_steps = []
                 # 狙击模式: 按住右键只自瞄 X 轴 (Y 轴不动)
                 ai_steps = self._apply_sniper_mode(ai_steps)
@@ -1198,29 +1203,30 @@ class MouseForwarderBackend:
         if now - self._backflash_last_t < self._backflash_cooldown:
             return  # 冷却中
 
-        # 找最高置信度的 dodge
-        best_dodge = None
+        # 找最高置信度的闪光目标 (按模型真实类名匹配, 兼容不同模型:
+        #   valorant 'dodge'(class4) / zv11s '闪光'(class7) / 其它 'flash'
+        #   不用 class_id 硬编码: zv11s 的 class4 是 '倒地', 硬编码会误触发)
+        best_flash = None
         for d in detections:
             if d.confidence < self._backflash_conf:
                 continue
-            # 类别名映射确认 (class 4 = dodge, 双保险)
             try:
                 from capture_inference import CLASS_NAMES
                 name = CLASS_NAMES[d.class_id] if d.class_id < len(CLASS_NAMES) else ''
             except Exception:
                 name = ''
-            if name == 'dodge' or d.class_id == 4:
-                if best_dodge is None or d.confidence > best_dodge.confidence:
-                    best_dodge = d
-        if best_dodge is None:
+            if name in ('dodge', '闪光', 'flash', '闪'):
+                if best_flash is None or d.confidence > best_flash.confidence:
+                    best_flash = d
+        if best_flash is None:
             return
 
         # 方向: 闪光在屏幕中心左侧 -> 往右转 (dx 取正镜像为右背轨迹方向)
         # 录制轨迹统一为"右背"方向; 闪光在左侧需要背向(右转), 右侧需要左转(镜像)
-        flash_left = best_dodge.cx < self._screen_w / 2
+        flash_left = best_flash.cx < self._screen_w / 2
         self._backflash_last_t = now
         self._backflash_trigger_count += 1
-        logger.info(f"Backflash: 检测到闪光 (conf={best_dodge.confidence:.2f}, "
+        logger.info(f"Backflash: 检测到闪光 (conf={best_flash.confidence:.2f}, "
                     f"在{'左' if flash_left else '右'}侧), 触发背闪 #{self._backflash_trigger_count} "
                     f"(延迟 {self._backflash_delay_ms}ms)")
         self._backflash_task = asyncio.create_task(self._backflash_playback(flash_left))
@@ -1360,7 +1366,8 @@ class MouseForwarderBackend:
                     pass
 
     def _apply_sniper_mode(self, ai_steps):
-        """狙击模式: 按住右键时 AI 轨迹只修正 X 轴 (Y 轴不动), 且用独立的 AI 倍数
+        """狙击模式: 按住右键时 AI 轨迹按 sniper_fix_y 决定是否修 Y 轴
+        (默认只修 X, Y 不动), 且用独立的 AI 倍数
 
         普通 ai_scale 已在 calculate() 内应用, 这里按比例补偿后
         使狙击模式下总倍率 = sniper_ai_scale。
@@ -1368,7 +1375,9 @@ class MouseForwarderBackend:
         if self.mouse._buttons_state & 2:
             base = max(float(self.trajectory.config.ai_scale), 0.01)
             s = self.trajectory.config.sniper_ai_scale / base
-            steps = [(int(dx * s), 0) for dx, dy in ai_steps]
+            fix_y = bool(self.trajectory.config.sniper_fix_y)
+            steps = [(int(dx * s), int(dy * s) if fix_y else 0)
+                     for dx, dy in ai_steps]
             return [(sx, sy) for sx, sy in steps if sx != 0 or sy != 0]
         return ai_steps
 
@@ -1792,7 +1801,11 @@ class MouseForwarderBackend:
                 if 'sniper_trigger_multiplier' in data:
                     config.sniper_trigger_multiplier = max(1.0, min(5.0, float(data['sniper_trigger_multiplier'])))
                 if 'sniper_ai_scale' in data:
-                    config.sniper_ai_scale = max(1.0, min(5.0, float(data['sniper_ai_scale'])))
+                    config.sniper_ai_scale = max(0.1, min(5.0, float(data['sniper_ai_scale'])))
+                if 'sniper_fix_y' in data:
+                    config.sniper_fix_y = bool(data['sniper_fix_y'])
+                if 'lmb_fov_multiplier' in data:
+                    config.lmb_fov_multiplier = max(1.0, min(5.0, float(data['lmb_fov_multiplier'])))
                 if 'sniper_deadzone' in data:
                     config.sniper_deadzone = max(0.0, min(200.0, float(data['sniper_deadzone'])))
                 if 'sniper_hysteresis' in data:
@@ -1847,6 +1860,8 @@ class MouseForwarderBackend:
                 self.config.set('trajectory', 'sniper_fov_multiplier', config.sniper_fov_multiplier)
                 self.config.set('trajectory', 'sniper_trigger_multiplier', config.sniper_trigger_multiplier)
                 self.config.set('trajectory', 'sniper_ai_scale', config.sniper_ai_scale)
+                self.config.set('trajectory', 'sniper_fix_y', config.sniper_fix_y)
+                self.config.set('trajectory', 'lmb_fov_multiplier', config.lmb_fov_multiplier)
                 self.config.set('trajectory', 'sniper_deadzone', config.sniper_deadzone)
                 self.config.set('trajectory', 'sniper_hysteresis', config.sniper_hysteresis)
                 self.config.set('trajectory', 'sniper_scope_time', config.sniper_scope_time)
@@ -1882,6 +1897,8 @@ class MouseForwarderBackend:
                         'sniper_fov_multiplier': config.sniper_fov_multiplier,
                         'sniper_trigger_multiplier': config.sniper_trigger_multiplier,
                         'sniper_ai_scale': config.sniper_ai_scale,
+                        'sniper_fix_y': config.sniper_fix_y,
+                        'lmb_fov_multiplier': config.lmb_fov_multiplier,
                         'sniper_deadzone': config.sniper_deadzone,
                         'sniper_hysteresis': config.sniper_hysteresis,
                         'sniper_scope_time': config.sniper_scope_time,
@@ -2353,6 +2370,8 @@ class MouseForwarderBackend:
                 'sniper_fov_multiplier': c.sniper_fov_multiplier,
                 'sniper_trigger_multiplier': c.sniper_trigger_multiplier,
                 'sniper_ai_scale': c.sniper_ai_scale,
+                'sniper_fix_y': c.sniper_fix_y,
+                'lmb_fov_multiplier': c.lmb_fov_multiplier,
                 'sniper_deadzone': c.sniper_deadzone,
                 'sniper_hysteresis': c.sniper_hysteresis,
                 'sniper_scope_time': c.sniper_scope_time,

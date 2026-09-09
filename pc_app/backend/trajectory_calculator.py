@@ -44,6 +44,8 @@ class TrajectoryConfig:
     sniper_fov_multiplier: float = 2.0  # 狙击模式 FOV 倍率 (按住右键时自瞄范围 ×倍率)
     sniper_trigger_multiplier: float = 3.0  # 狙击模式扳机范围倍数 (触发阈值 ×倍率)
     sniper_ai_scale: float = 1.0        # 狙击模式 AI 倍数 (开镜灵敏度低, 独立缩放)
+    sniper_fix_y: bool = False          # 狙击模式是否修正 Y 轴 (False=只修 X 不动 Y, 保持原行为)
+    lmb_fov_multiplier: float = 2.0     # 按住左键时 FOV 倍率 (开火时扩大自瞄范围, 1=不变)
     sniper_deadzone: float = 10.0       # 狙击模式死区 (px, 目标距中心小于此值停止移动)
     sniper_hysteresis: float = 10.0     # 狙击模式滞回 (px, 超出此范围重新开始瞄准)
     sniper_scope_time: float = 0.28      # 狙击开镜时间 (秒): 按住右键后此时间内禁止触发扳机
@@ -168,6 +170,8 @@ class TrajectoryCalculator:
         self.is_settled: bool = False
         # 狙击模式 (由 main.py 按鼠标右键状态设置): 自瞄范围乘倍率
         self.sniper_mode: bool = False
+        # 左键开火模式 (由 main.py 按左键状态设置): 自瞄范围乘 lmb_fov_multiplier
+        self.lmb_mode: bool = False
 
         # PID 控制器状态
         self._integral_x: float = 0.0
@@ -208,6 +212,8 @@ class TrajectoryCalculator:
         fov = self.config.fov_radius + self.config.fov_dynamic_gain * box_h
         if self.sniper_mode:
             fov *= self.config.sniper_fov_multiplier
+        if self.lmb_mode:
+            fov *= self.config.lmb_fov_multiplier
         return fov
 
     def update_mouse_position(self, x: float, y: float):

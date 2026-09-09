@@ -251,6 +251,11 @@
                     <div class="hint-text">每 1px 目标框高增加的范围 (框越高范围越大)</div>
                 </div>
                 <div class="form-group">
+                    <label>左键FOV倍数 <span id="lbl-lmb-fov">2.0</span>x</label>
+                    <input type="range" id="slider-lmb-fov" min="1.0" max="5.0" step="0.1" value="2.0">
+                    <div class="hint-text">按住左键开火时自瞄范围 ×倍数 (1=不变); 与狙击倍数叠乘</div>
+                </div>
+                <div class="form-group">
                     <label class="switch-label" style="display:flex;align-items:center;gap:8px;">
                         <label class="switch" style="margin:0;">
                             <input type="checkbox" id="chk-fov-pull">
@@ -272,8 +277,18 @@
                 <h3 style="margin-top:10px;font-size:12px;color:var(--text-muted);">狙击模式参数</h3>
                 <div class="form-group">
                     <label>狙击AI倍数 <span id="lbl-sniper-ai">1.0</span>x</label>
-                    <input type="range" id="slider-sniper-ai" min="1.0" max="5.0" step="0.1" value="1.0">
+                    <input type="range" id="slider-sniper-ai" min="0.1" max="5.0" step="0.1" value="1.0">
                     <div class="hint-text">狙击模式 AI 输出缩放 (开镜灵敏度低, 独立设置)</div>
+                </div>
+                <div class="form-group">
+                    <label class="switch-label" style="display:flex;align-items:center;gap:8px;">
+                        <label class="switch" style="margin:0;">
+                            <input type="checkbox" id="chk-sniper-fix-y">
+                            <span class="slider"></span>
+                        </label>
+                        狙击修正Y轴
+                    </label>
+                    <div class="hint-text" style="margin-left:4px;">关闭 = 开镜只修 X 不动 Y (默认); 打开 = Y 轴也跟随修正</div>
                 </div>
                 <div class="form-group">
                     <label>狙击死区 <span id="lbl-sniper-deadzone">10</span>px</label>
