@@ -105,11 +105,63 @@ class Config:
         if config_dir is None:
             config_dir = os.path.join(os.path.dirname(__file__), '..')
         self._path = os.path.join(config_dir, 'config.json')
+        self._backup_path = self._path + '.backup'
         # 深拷贝: 嵌套 dict 与 DEFAULT_CONFIG 完全隔离 (浅拷贝会全局污染)
         self._data = copy.deepcopy(DEFAULT_CONFIG)
         self._loaded_ok = True       # 文件正常解析
         self._write_allowed = allow_write
         self.load()
+        # load 后检查结构退化 (旧进程曾把 config 打回默认结构, 方案全丢)
+        self._check_degraded_and_recover()
+
+    @staticmethod
+    def _content_score(data: dict) -> int:
+        """配置"实质内容"评分: 方案参数数 + 关键段存在性 (判断是否退化)"""
+        score = 0
+        presets = data.get('presets', {})
+        for k in ('1', '2', '3', '4', '5'):
+            score += len((presets.get(k, {}).get('params') or {}))
+        if 'back_flash' in data:
+            score += 5
+        return score
+
+    def _check_degraded_and_recover(self):
+        """检测到配置结构退化且备份更完整时, 自动从备份恢复
+
+        场景: 残留旧进程把 config.json 整段打回默认结构 (方案全空)。
+        旧进程不会去动 .backup 文件, 因此备份仍保有完整方案。
+        """
+        if not os.path.exists(self._backup_path):
+            return
+        try:
+            cur_score = self._content_score(self._data)
+            with open(self._backup_path, 'r', encoding='utf-8') as f:
+                backup = json.load(f)
+            bak_score = self._content_score(backup)
+            # 备份明显更完整 (多了实质内容) 才恢复, 防误复活
+            if bak_score >= cur_score + 10 and isinstance(backup, dict):
+                self._deep_merge(self._data, backup)
+                logger.warning(
+                    f"检测到配置退化 (当前内容评分 {cur_score} < 备份 {bak_score}), "
+                    f"已自动从 config.json.backup 恢复")
+                if self._write_allowed:
+                    self.save()
+        except Exception as e:
+            logger.warning(f"Backup recover check failed: {e}")
+
+    def _auto_backup(self):
+        """有实质内容时自动备份 (原子写)"""
+        try:
+            if self._content_score(self._data) <= 0:
+                return
+            tmp_path = self._backup_path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._backup_path)
+        except Exception:
+            pass
 
     @property
     def path(self) -> str:
@@ -186,7 +238,7 @@ class Config:
                              f"本次运行禁止写配置")
 
     def save(self):
-        """保存到文件 (原子写)"""
+        """保存到文件 (原子写) + 自动备份"""
         if not self._write_allowed:
             logger.warning("Config 写入已被禁用 (load 失败保护), 跳过保存")
             return
@@ -197,6 +249,7 @@ class Config:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, self._path)  # 原子替换: 读方永远看到完整文件
+            self._auto_backup()
         except Exception as e:
             logger.warning(f"Failed to save config: {e}")
 

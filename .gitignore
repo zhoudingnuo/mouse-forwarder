@@ -31,3 +31,5 @@ firmware/*/obj/
 pc_app/backend.lock
 pc_app/config.json.bad-*
 pc_app/config.json.tmp
+pc_app/config.json.backup
+pc_app/config.json.backup.tmp
