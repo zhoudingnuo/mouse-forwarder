@@ -37,7 +37,7 @@ from protocol import encode_packet
 from flasher import flash_firmware, detect_bootloader, erase_flash
 from trajectory_calculator import TrajectoryCalculator, TrajectoryConfig, Detection
 from capture_inference import draw_detections_on_frame, encode_frame_jpeg, update_class_names
-from config import Config
+from config import Config, acquire_backend_lock, release_backend_lock
 
 # 锁模式需要键盘监听
 try:
@@ -90,7 +90,9 @@ class MouseForwarderBackend:
         self.trajectory = TrajectoryCalculator()
 
         # 持久化配置 (必须在其他配置之前加载)
-        self.config = Config()
+        # 单实例锁: 已有后端在运行时, 本实例禁止写 config (防配置互相覆盖损坏)
+        _can_write = acquire_backend_lock()
+        self.config = Config(allow_write=_can_write)
         
         # 扳机参数默认值 (稍后被配置覆盖)
         self._trigger_enabled = True
@@ -2448,6 +2450,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         asyncio.run(backend.stop())
+    finally:
+        release_backend_lock()
 
 
 if __name__ == '__main__':

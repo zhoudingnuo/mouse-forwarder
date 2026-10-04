@@ -27,3 +27,7 @@ firmware/*/obj/
 # 固件产物
 *.elf
 *.hex
+# config 并发安全产物
+pc_app/backend.lock
+pc_app/config.json.bad-*
+pc_app/config.json.tmp
