@@ -113,6 +113,8 @@ class Config:
         self.load()
         # load 后检查结构退化 (旧进程曾把 config 打回默认结构, 方案全丢)
         self._check_degraded_and_recover()
+        # 启动即刷新备份 (旧进程覆盖时 .backup 是恢复来源)
+        self._auto_backup()
 
     @staticmethod
     def _content_score(data: dict) -> int:
